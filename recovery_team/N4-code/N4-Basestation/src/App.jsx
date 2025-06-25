@@ -7,7 +7,9 @@ import Chart from "./components/Chart";
 import Video from "./components/Video";
 import MQTT from "paho-mqtt";
 
-
+let lastChartUpdate = 0;
+const CHART_UPDATE_INTERVAL = 250; // ms, adjust as needed
+const MAX_POINTS = 200; // max points to keep in each chart
 
 function App() {
   const [telemetry, setTelemetry] = useState({
@@ -457,20 +459,35 @@ function App() {
   };
 
   const updateCharts = (time, received_data) => {
-    // Update altitude chart
-    altitudeChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.gps_data.gps_altitude, });
-    altitudeChartRef.current.data.datasets[1].data.push({ x: time, y: received_data.alt_data.AGL, });
-    altitudeChartRef.current.update("quiet");
+   if (time - lastChartUpdate < CHART_UPDATE_INTERVAL) return;
+   lastChartUpdate = time;
 
-    // Update velocity chart
-    velocityChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.alt_data.velocity,});
-    velocityChartRef.current.update("quiet");
+   // --- Altitude ---
+   const alt0 = altitudeChartRef.current.data.datasets[0].data;
+   const alt1 = altitudeChartRef.current.data.datasets[1].data;
+   alt0.push({ x: time, y: received_data.gps_data.gps_altitude });
+   alt1.push({ x: time, y: received_data.alt_data.AGL });
+   if (alt0.length > MAX_POINTS) alt0.shift();
+   if (alt1.length > MAX_POINTS) alt1.shift();
+   altitudeChartRef.current.update("quiet");
 
-    // Update acceleration chart
-    accelerationChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.acc_data.ax, }); 
-    accelerationChartRef.current.data.datasets[1].data.push({ x: time, y: received_data.acc_data.ay, });
-    accelerationChartRef.current.data.datasets[2].data.push({ x: time, y: received_data.acc_data.az, });
-    accelerationChartRef.current.update("quiet");
+   // --- Velocity ---
+   const vel0 = velocityChartRef.current.data.datasets[0].data;
+   vel0.push({ x: time, y: received_data.alt_data.velocity });
+   if (vel0.length > MAX_POINTS) vel0.shift();
+   velocityChartRef.current.update("quiet");
+
+   // --- Acceleration ---
+   const acc0 = accelerationChartRef.current.data.datasets[0].data;
+   const acc1 = accelerationChartRef.current.data.datasets[1].data;
+   const acc2 = accelerationChartRef.current.data.datasets[2].data;
+   acc0.push({ x: time, y: received_data.acc_data.ax });
+   acc1.push({ x: time, y: received_data.acc_data.ay });
+   acc2.push({ x: time, y: received_data.acc_data.az });
+   if (acc0.length > MAX_POINTS) acc0.shift();
+   if (acc1.length > MAX_POINTS) acc1.shift();
+   if (acc2.length > MAX_POINTS) acc2.shift();
+   accelerationChartRef.current.update("quiet");
   };
 
   return (
