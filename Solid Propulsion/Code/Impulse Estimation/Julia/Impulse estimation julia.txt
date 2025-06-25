@@ -1,0 +1,73 @@
+using Interpolations
+using Plots
+
+m = 22.5 #estimated mass (kg)
+t = 3.6 #estimated burn time (s)
+g = 9.8 #gravitational acceleration (m/s^2)
+cd = 0.4 #drag coefficient
+D = 11 #max rocket diameter (cm)
+md = 17.5 #estimated rocket mass without grains (kg)
+
+N_values = [0.0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+Fz_values = [1.0, 0.82, 0.7, 0.62, 0.56, 0.52, 0.48, 0.44, 0.4, 0.38, 0.38]
+
+
+# Create quadratic interpolation function
+itp = LinearInterpolation(N_values, Fz_values)
+
+# Define a function to interpolate Fz for any given N
+function interpolate_Fz(N)
+    return itp(N)
+end
+
+
+#altitude at burnout
+function burnout(F, m, g, t)
+    z1 = 0.5 * ((F / m) - g) * t^2 
+    return z1
+end
+
+#Maximum altitude (apogee)
+function apogee(F, z1, m, g)
+    z2 = (F * z1) / (m * g)
+    return z2
+end
+
+#Thrust iteration
+function thrust_generator()
+    z1 = 0  # Initialize z1
+    z2 = 0  # Initialize z2
+    N_plots = []
+    Fz_plots = []
+    for F in 0:25:3500
+        z1 = burnout(F, m, g, t)  # Update z1
+        z2 = apogee(F, z1, m, g)  # Update z2
+        v1 = sqrt(((2*z1)/m) * (F - m*g))
+        N = (cd*D^2*v1^2)/(1000*md)  #drag influence number. 
+        Fz = interpolate_Fz(N)
+        z2_actual = Fz * z2
+
+        # if z2_actual >= 4000 # Check if z2 exceeds 3200
+        #     println("Thrust: ", F)
+        #     println("Altitude at burnout: ", z1)
+        #     println("Maximum altitude (apogee): ", z2)
+        #     println("velocity at burnout v1: ", v1)
+        #     println("Drag influence number N: ", N)
+        #     break  # Exit loop once apogee is reached
+        # end
+        println("Iteration", F/25)
+        println("Thrust: ", F)
+        println("Altitude at burnout: ", z1)
+        println("Maximum altitude (apogee): ", z2_actual)
+        println("velocity at burnout v1: ", v1)
+        println("Drag influence number N: ", N)
+        println("\n")
+
+        push!(N_plots, N)
+        push!(Fz_plots, Fz)
+    end
+
+    plot(N_plots, Fz_plots)
+end
+
+thrust_generator()  # Call the function to start the calculation
