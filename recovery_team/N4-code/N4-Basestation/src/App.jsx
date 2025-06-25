@@ -245,81 +245,81 @@ function App() {
   };
 
 // using http server 
-useEffect(() => {
-  const fetchTelemetryData = async () => {
-    try {
-      const response = await fetch("http://localhost:5000/data");
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-      const jsonData = await response.json();
+// useEffect(() => {
+//   const fetchTelemetryData = async () => {
+//     try {
+//       const response = await fetch("http://localhost:5000/data");
+//       if (!response.ok) {
+//         throw new Error(`HTTP error! Status: ${response.status}`);
+//       }
+//       const jsonData = await response.json();
 
-      // Extract relevant telemetry data
-      const newTelemetry = {
-        state: jsonData.state,
-        operationMode: jsonData.operation_mode,
-        latitude: jsonData.gps_data.latitude,
-        longitude: jsonData.gps_data.longitude,
-        altitude: jsonData.gps_data.gps_altitude,
-        pressure: jsonData.alt_data.pressure,
-        temperature: jsonData.alt_data.temperature,
-        pyroDrogue: jsonData.chute_state.pyro1_state,
-        pyroMain: jsonData.chute_state.pyro2_state,
-        batteryVoltage: jsonData.battery_voltage,
-      };
+//       // Extract relevant telemetry data
+//       const newTelemetry = {
+//         state: jsonData.state,
+//         operationMode: jsonData.operation_mode,
+//         latitude: jsonData.gps_data.latitude,
+//         longitude: jsonData.gps_data.longitude,
+//         altitude: jsonData.gps_data.gps_altitude,
+//         pressure: jsonData.alt_data.pressure,
+//         temperature: jsonData.alt_data.temperature,
+//         pyroDrogue: jsonData.chute_state.pyro1_state,
+//         pyroMain: jsonData.chute_state.pyro2_state,
+//         batteryVoltage: jsonData.battery_voltage,
+//       };
 
-      // Update state
-      setTelemetry((prev) => ({
-        ...prev,
-        ...newTelemetry,
-      }));
+//       // Update state
+//       setTelemetry((prev) => ({
+//         ...prev,
+//         ...newTelemetry,
+//       }));
 
-      // Update charts
-      updateCharts(Date.now(), jsonData);
+//       // Update charts
+//       updateCharts(Date.now(), jsonData);
 
-       // Update flight computer connection status
-       setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: {
-          status: "Connected",
-        },
-      }));
+//        // Update flight computer connection status
+//        setConnectionStatus((prev) => ({
+//         ...prev,
+//         flightComputer: {
+//           status: "Connected",
+//         },
+//       }));
 
-      setConnectionStatus((prev) => ({
-        ...prev,
-        baseStation: {
-          status: "Connected",
-        },
-      }));
+//       setConnectionStatus((prev) => ({
+//         ...prev,
+//         baseStation: {
+//           status: "Connected",
+//         },
+//       }));
 
-    } catch (error) {
-      console.error("Error fetching telemetry data:", error);
-      const errorLog = {
-        timestamp: new Date(),
-        level: "ERROR",
-        message: "Error parsing message: " + error.message,
-        source: "Dashboard",
-      };
+//     } catch (error) {
+//       console.error("Error fetching telemetry data:", error);
+//       const errorLog = {
+//         timestamp: new Date(),
+//         level: "ERROR",
+//         message: "Error parsing message: " + error.message,
+//         source: "Dashboard",
+//       };
 
-      setArmingLogs((prevLogs) => [errorLog, ...prevLogs]);
+//       setArmingLogs((prevLogs) => [errorLog, ...prevLogs]);
 
-      setError("Failed to fetch telemetry data");
+//       setError("Failed to fetch telemetry data");
 
-      setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: {
-          ...prev.flightComputer,
-          status: "Data Error",
-        },
-      }));
-    }
-  };
+//       setConnectionStatus((prev) => ({
+//         ...prev,
+//         flightComputer: {
+//           ...prev.flightComputer,
+//           status: "Data Error",
+//         },
+//       }));
+//     }
+//   };
 
-  // Fetch telemetry data every 1/100th of asecond
-  const interval = setInterval(fetchTelemetryData, 100);
+//   // Fetch telemetry data every 1/100th of asecond
+//   const interval = setInterval(fetchTelemetryData, 100);
 
-  return () => clearInterval(interval);
-}, []);
+//   return () => clearInterval(interval);
+// }, []);
 
 
   // Message arrived handler
