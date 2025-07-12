@@ -1,0 +1,61 @@
+# encoding: utf-8
+# 2025 R1
+SetScriptVersion(Version="25.1.122")
+template1 = GetTemplate(TemplateName="Chemkin")
+system1 = template1.CreateSystem()
+system1.Delete()
+template2 = GetTemplate(TemplateName="Geometry")
+system2 = template2.CreateSystem()
+geometry1 = system2.GetContainer(ComponentName="Geometry")
+geometry1.Edit()
+Save(Overwrite=True)
+template3 = GetTemplate(TemplateName="Mesh")
+system3 = template3.CreateSystem(
+    Position="Right",
+    RelativeTo=system2)
+geometryComponent1 = system3.GetComponent(Name="Geometry")
+geometryComponent2 = system2.GetComponent(Name="Geometry")
+geometryComponent1.ReplaceWithShare(
+    TargetSystem=system3,
+    ComponentToShare=geometryComponent2,
+    SourceSystem=system2)
+meshComponent1 = system3.GetComponent(Name="Mesh")
+meshComponent1.Refresh()
+meshComponent1.Update(AllDependencies=True)
+mesh1 = system3.GetContainer(ComponentName="Mesh")
+mesh1.Edit()
+Save(Overwrite=True)
+system4 = template1.CreateSystem(
+    Position="Right",
+    RelativeTo=system3)
+system4.Delete()
+template4 = GetTemplate(TemplateName="FLUENT")
+system5 = template4.CreateSystem(
+    Position="Right",
+    RelativeTo=system3)
+system6 = template1.CreateSystem(
+    Position="Left",
+    RelativeTo=system5)
+setupComponent1 = system5.GetComponent(Name="Setup")
+meshComponent1.TransferData(TargetComponent=setupComponent1)
+system6.Delete()
+meshComponent1.Update(AllDependencies=True)
+setupComponent1.Refresh()
+system7 = template1.CreateSystem(
+    Position="Below",
+    RelativeTo=system5)
+setup1 = system7.GetContainer(ComponentName="Setup")
+ChemkinSetup.Edit(Container=setup1)
+ChemkinSetup.Edit(Container=setup1)
+system7.Delete()
+setup2 = system5.GetContainer(ComponentName="Setup")
+fluentLauncherSettings1 = setup2.GetFluentLauncherSettings()
+fluentLauncherSettings1.SetEntityProperties(Properties=Set(EnvPath={}, RunParallel=True, NumberOfProcessorsMeshing=4, NumberOfProcessors=4))
+setup2.Edit()
+fluentLauncherSettings1.SetEntityProperties(Properties=Set(EnvPath={}, NumberOfProcessorsMeshing=2, NumberOfProcessors=2))
+setup2.Edit()
+Refresh()
+geometry1.Exit()
+mesh1.Exit()
+system5.Delete()
+Save(Overwrite=True)

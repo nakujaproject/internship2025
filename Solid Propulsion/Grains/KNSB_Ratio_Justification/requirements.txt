@@ -1,0 +1,8 @@
+ipykernel
+numpy
+pandas
+cantera
+matplotlib
+Fraction
+sympy
+scipy
