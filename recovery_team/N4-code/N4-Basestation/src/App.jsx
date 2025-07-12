@@ -8,7 +8,7 @@ import Video from "./components/Video";
 import MQTT from "paho-mqtt";
 
 let lastChartUpdate = 0;
-const CHART_UPDATE_INTERVAL = 250; // ms, adjust as needed
+const CHART_UPDATE_INTERVAL = 200; // ms, adjust as needed
 const MAX_POINTS = 200; // max points to keep in each chart
 
 function App() {
@@ -402,15 +402,15 @@ function App() {
           gps_altitude: values[13],
         },
         alt_data: {
-          pressure: values[15],
-          temperature: values[16],
-          AGL: values[17],
+          pressure: values[14],
+          temperature: values[15],
+          AGL: values[16],
         },
         chute_state: {
-          pyro1_state: values[19] === 1 ? 1 : 0, // Placeholder logic
-          pyro2_state: values[20] === 2 ? 1 : 0,
+          pyro1_state: values[17]=== 1 ? 1 : 0, // Placeholder logic
+          pyro2_state: values[18] === 1 ? 1 : 0,
         },
-        battery_voltage: values[21],
+        battery_voltage: values[19],
       };
 
       setConnectionStatus((prev) => ({
