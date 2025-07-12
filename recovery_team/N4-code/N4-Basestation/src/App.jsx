@@ -7,7 +7,9 @@ import Chart from "./components/Chart";
 import Video from "./components/Video";
 import MQTT from "paho-mqtt";
 
-
+let lastChartUpdate = 0;
+const CHART_UPDATE_INTERVAL = 200; // ms, adjust as needed
+const MAX_POINTS = 200; // max points to keep in each chart
 
 function App() {
   const [telemetry, setTelemetry] = useState({
@@ -245,81 +247,81 @@ function App() {
   };
 
 // using http server 
-useEffect(() => {
-  const fetchTelemetryData = async () => {
-    try {
-      const response = await fetch("http://localhost:5000/data");
-      if (!response.ok) {
-        throw new Error(`HTTP error! Status: ${response.status}`);
-      }
-      const jsonData = await response.json();
+// useEffect(() => {
+//   const fetchTelemetryData = async () => {
+//     try {
+//       const response = await fetch("http://localhost:5000/data");
+//       if (!response.ok) {
+//         throw new Error(`HTTP error! Status: ${response.status}`);
+//       }
+//       const jsonData = await response.json();
 
-      // Extract relevant telemetry data
-      const newTelemetry = {
-        state: jsonData.state,
-        operationMode: jsonData.operation_mode,
-        latitude: jsonData.gps_data.latitude,
-        longitude: jsonData.gps_data.longitude,
-        altitude: jsonData.gps_data.gps_altitude,
-        pressure: jsonData.alt_data.pressure,
-        temperature: jsonData.alt_data.temperature,
-        pyroDrogue: jsonData.chute_state.pyro1_state,
-        pyroMain: jsonData.chute_state.pyro2_state,
-        batteryVoltage: jsonData.battery_voltage,
-      };
+//       // Extract relevant telemetry data
+//       const newTelemetry = {
+//         state: jsonData.state,
+//         operationMode: jsonData.operation_mode,
+//         latitude: jsonData.gps_data.latitude,
+//         longitude: jsonData.gps_data.longitude,
+//         altitude: jsonData.gps_data.gps_altitude,
+//         pressure: jsonData.alt_data.pressure,
+//         temperature: jsonData.alt_data.temperature,
+//         pyroDrogue: jsonData.chute_state.pyro1_state,
+//         pyroMain: jsonData.chute_state.pyro2_state,
+//         batteryVoltage: jsonData.battery_voltage,
+//       };
 
-      // Update state
-      setTelemetry((prev) => ({
-        ...prev,
-        ...newTelemetry,
-      }));
+//       // Update state
+//       setTelemetry((prev) => ({
+//         ...prev,
+//         ...newTelemetry,
+//       }));
 
-      // Update charts
-      updateCharts(Date.now(), jsonData);
+//       // Update charts
+//       updateCharts(Date.now(), jsonData);
 
-       // Update flight computer connection status
-       setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: {
-          status: "Connected",
-        },
-      }));
+//        // Update flight computer connection status
+//        setConnectionStatus((prev) => ({
+//         ...prev,
+//         flightComputer: {
+//           status: "Connected",
+//         },
+//       }));
 
-      setConnectionStatus((prev) => ({
-        ...prev,
-        baseStation: {
-          status: "Connected",
-        },
-      }));
+//       setConnectionStatus((prev) => ({
+//         ...prev,
+//         baseStation: {
+//           status: "Connected",
+//         },
+//       }));
 
-    } catch (error) {
-      console.error("Error fetching telemetry data:", error);
-      const errorLog = {
-        timestamp: new Date(),
-        level: "ERROR",
-        message: "Error parsing message: " + error.message,
-        source: "Dashboard",
-      };
+//     } catch (error) {
+//       console.error("Error fetching telemetry data:", error);
+//       const errorLog = {
+//         timestamp: new Date(),
+//         level: "ERROR",
+//         message: "Error parsing message: " + error.message,
+//         source: "Dashboard",
+//       };
 
-      setArmingLogs((prevLogs) => [errorLog, ...prevLogs]);
+//       setArmingLogs((prevLogs) => [errorLog, ...prevLogs]);
 
-      setError("Failed to fetch telemetry data");
+//       setError("Failed to fetch telemetry data");
 
-      setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: {
-          ...prev.flightComputer,
-          status: "Data Error",
-        },
-      }));
-    }
-  };
+//       setConnectionStatus((prev) => ({
+//         ...prev,
+//         flightComputer: {
+//           ...prev.flightComputer,
+//           status: "Data Error",
+//         },
+//       }));
+//     }
+//   };
 
-  // Fetch telemetry data every 1/100th of asecond
-  const interval = setInterval(fetchTelemetryData, 100);
+//   // Fetch telemetry data every 1/100th of asecond
+//   const interval = setInterval(fetchTelemetryData, 100);
 
-  return () => clearInterval(interval);
-}, []);
+//   return () => clearInterval(interval);
+// }, []);
 
 
   // Message arrived handler
@@ -400,15 +402,15 @@ useEffect(() => {
           gps_altitude: values[13],
         },
         alt_data: {
-          pressure: values[15],
-          temperature: values[16],
-          AGL: values[17],
+          pressure: values[14],
+          temperature: values[15],
+          AGL: values[16],
         },
         chute_state: {
-          pyro1_state: values[19] === 1 ? 1 : 0, // Placeholder logic
-          pyro2_state: values[20] === 2 ? 1 : 0,
+          pyro1_state: values[17]=== 1 ? 1 : 0, // Placeholder logic
+          pyro2_state: values[18] === 1 ? 1 : 0,
         },
-        battery_voltage: values[21],
+        battery_voltage: values[19],
       };
 
       setConnectionStatus((prev) => ({
@@ -457,20 +459,35 @@ useEffect(() => {
   };
 
   const updateCharts = (time, received_data) => {
-    // Update altitude chart
-    altitudeChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.gps_data.gps_altitude, });
-    altitudeChartRef.current.data.datasets[1].data.push({ x: time, y: received_data.alt_data.AGL, });
-    altitudeChartRef.current.update("quiet");
+   if (time - lastChartUpdate < CHART_UPDATE_INTERVAL) return;
+   lastChartUpdate = time;
 
-    // Update velocity chart
-    velocityChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.alt_data.velocity,});
-    velocityChartRef.current.update("quiet");
+   // --- Altitude ---
+   const alt0 = altitudeChartRef.current.data.datasets[0].data;
+   const alt1 = altitudeChartRef.current.data.datasets[1].data;
+   alt0.push({ x: time, y: received_data.gps_data.gps_altitude });
+   alt1.push({ x: time, y: received_data.alt_data.AGL });
+   if (alt0.length > MAX_POINTS) alt0.shift();
+   if (alt1.length > MAX_POINTS) alt1.shift();
+   altitudeChartRef.current.update("quiet");
 
-    // Update acceleration chart
-    accelerationChartRef.current.data.datasets[0].data.push({ x: time, y: received_data.acc_data.ax, }); 
-    accelerationChartRef.current.data.datasets[1].data.push({ x: time, y: received_data.acc_data.ay, });
-    accelerationChartRef.current.data.datasets[2].data.push({ x: time, y: received_data.acc_data.az, });
-    accelerationChartRef.current.update("quiet");
+   // --- Velocity ---
+   const vel0 = velocityChartRef.current.data.datasets[0].data;
+   vel0.push({ x: time, y: received_data.alt_data.velocity });
+   if (vel0.length > MAX_POINTS) vel0.shift();
+   velocityChartRef.current.update("quiet");
+
+   // --- Acceleration ---
+   const acc0 = accelerationChartRef.current.data.datasets[0].data;
+   const acc1 = accelerationChartRef.current.data.datasets[1].data;
+   const acc2 = accelerationChartRef.current.data.datasets[2].data;
+   acc0.push({ x: time, y: received_data.acc_data.ax });
+   acc1.push({ x: time, y: received_data.acc_data.ay });
+   acc2.push({ x: time, y: received_data.acc_data.az });
+   if (acc0.length > MAX_POINTS) acc0.shift();
+   if (acc1.length > MAX_POINTS) acc1.shift();
+   if (acc2.length > MAX_POINTS) acc2.shift();
+   accelerationChartRef.current.update("quiet");
   };
 
   return (
