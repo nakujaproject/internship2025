@@ -1,109 +1,82 @@
 import serial
-from flask import Flask, jsonify
-from flask_cors import CORS
 import json
 import logging
+import time
+import paho.mqtt.client as mqtt
 from serial.tools import list_ports
 
-app = Flask(__name__)
-CORS(app)
+# === CONFIG ===
+SERIAL_BAUD = 115200
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_TELEMETRY_TOPIC = "n4/flight-computer-1"
+MQTT_COMMAND_TOPIC = "n4/commands"
 
-# Set up logging
-logging.basicConfig(level=logging.DEBUG)
-logger = logging.getLogger(__name__)
+# === LOGGING ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("BaseStationServer")
 
+# === FIND AND CONNECT TO SERIAL DEVICE ===
 def find_arduino_port():
-    """Find the Arduino serial port automatically."""
     ports = list_ports.comports()
     for port in ports:
-        # Common Arduino identifiers
         if "Arduino" in port.description or "CH340" in port.description or "USB" in port.description:
             return port.device
     return None
 
 def initialize_serial():
-    """Initialize serial connection with error handling."""
     try:
-        # Try to find Arduino port automatically
-        port = find_arduino_port() or '/dev/ttyUSB0'  # Fallback to default
-        ser = serial.Serial(port, 115200, timeout=None)
-        logger.info(f"Successfully connected to {port}")
+        port = find_arduino_port() or '/dev/ttyUSB0'
+        ser = serial.Serial(port, SERIAL_BAUD, timeout=0.2)
+        logger.info(f"Connected to serial port: {port}")
         return ser
-    except serial.SerialException as e:
-        logger.error(f"Failed to connect to serial port: {e}")
+    except Exception as e:
+        logger.error(f"Failed to open serial port: {e}")
         return None
 
-# Initialize serial connection
-serial_connection = initialize_serial()
+serial_conn = initialize_serial()
 
-@app.route('/debug', methods=['GET'])
-def debug_info():
-    """Endpoint to get debug information about the serial connection."""
-    if serial_connection is None:
-        return jsonify({
-            "status": "error",
-            "message": "No serial connection",
-            "available_ports": [port.device for port in list_ports.comports()]
-        })
-    
-    return jsonify({
-        "status": "connected",
-        "port": serial_connection.port,
-        "baudrate": serial_connection.baudrate,
-        "is_open": serial_connection.is_open,
-        "in_waiting": serial_connection.in_waiting if serial_connection.is_open else 0
-    })
+# === MQTT ===
+client = mqtt.Client()
 
-@app.route('/data', methods=['GET'])
-def get_data():
-    """Get data from serial port with enhanced error handling."""
-    if serial_connection is None:
-        logger.error("No serial connection available")
-        return jsonify({"error": "Serial connection not available"}), 503
-    
-    try:
-        if not serial_connection.is_open:
-            serial_connection.open()
-        
-        if serial_connection.in_waiting:
-            raw_data = serial_connection.readline().decode('utf-8').strip()
-            logger.debug(f"Received raw data: {raw_data}")
-            
-            try:
-                parsed_data = json.loads(raw_data)
-                return jsonify(parsed_data)
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parsing error: {e}")
-                return jsonify({"error": f"Invalid JSON data: {str(e)}"}), 400
-        else:
-            logger.debug("No data available in serial buffer")
-            return jsonify({"error": "No data available in serial buffer"}), 404
-            
-    except serial.SerialException as e:
-        logger.error(f"Serial port error: {e}")
-        return jsonify({"error": f"Serial port error: {str(e)}"}), 500
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+# Command listener (MQTT -> Serial)
+def on_mqtt_message(client, userdata, msg):
+    command = msg.payload.decode().strip()
+    logger.info(f"Received command via MQTT: {command}")
+    if command in ["ARM", "DIS"] and serial_conn and serial_conn.is_open:
+        serial_conn.write((command + "\n").encode())
+        logger.info(f"Forwarded command '{command}' to serial")
 
-@app.route('/reconnect', methods=['GET'])
-def reconnect():
-    """Endpoint to force a reconnection to the serial port."""
-    global serial_connection
-    
-    try:
-        if serial_connection and serial_connection.is_open:
-            serial_connection.close()
-        
-        serial_connection = initialize_serial()
-        
-        if serial_connection and serial_connection.is_open:
-            return jsonify({"status": "success", "message": f"Reconnected to {serial_connection.port}"})
-        else:
-            return jsonify({"status": "error", "message": "Failed to reconnect"}), 500
-            
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+# MQTT connect
+client.on_message = on_mqtt_message
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
+client.subscribe(MQTT_COMMAND_TOPIC)
+client.loop_start()
+
+# === MAIN LOOP: SERIAL -> MQTT ===
+def main_loop():
+    if not serial_conn:
+        logger.error("Serial not connected.")
+        return
+
+    while True:
+        try:
+            if serial_conn.in_waiting:
+                line = serial_conn.readline().decode().strip()
+                logger.debug(f"Raw data: {line}")
+                try:
+                    parsed = json.loads(line)
+                    client.publish(MQTT_TELEMETRY_TOPIC, json.dumps(parsed))
+                    logger.info(f"Published telemetry to {MQTT_TELEMETRY_TOPIC}")
+                except json.JSONDecodeError:
+                    logger.warning(f"Invalid JSON: {line}")
+        except KeyboardInterrupt:
+            logger.info("Interrupted. Exiting...")
+            break
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+        time.sleep(0.05)
 
 if __name__ == '__main__':
-    app.run(host='localhost', port=5000, debug=True)
+    logger.info("Starting base station server...")
+    main_loop()
