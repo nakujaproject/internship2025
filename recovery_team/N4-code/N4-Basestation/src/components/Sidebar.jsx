@@ -5,13 +5,12 @@ import Button from "./Button";
 import LogNotification from "./LogNotification";
 
 import {
-  createThrottledSetter,
   determineAntenna,
   getRocketStatusAndColor,
 } from "../utils/sidebarUtils";
 
 function Sidebar(props) {
-  const THROTTLEDELAY = 100;
+  // Remove throttling for immediate updates
   const statusRef = useRef();
 
   // State Variables
@@ -22,6 +21,8 @@ function Sidebar(props) {
   const [temperature, setTemperature] = useState(0);
   const [pyroDrogue, setPyroDrougue] = useState(0);
   const [pyroMain, setPyroMain] = useState(0);
+  const [rssi, setRssi] = useState(0);
+  const [communicationMode, setCommunicationMode] = useState("MQTT");
   const [isArmed, setIsArmed] = useState(false);
   const [rocketStatus, setRocketStatus] = useState("Pre-Flight");
   const [antenna, setAntenna] = useState("A-1");
@@ -30,74 +31,47 @@ function Sidebar(props) {
   const [port, setPort] = useState("");
   const [showArmingLogs, setShowArmingLogs] = useState(false);
 
-  // Throttled Setters
-  const throttledSetState = createThrottledSetter(setState, THROTTLEDELAY);
-  const throttledSetOperationMode = createThrottledSetter(
-    setOperationMode,
-    THROTTLEDELAY
-  );
-  const throttledSetPressure = createThrottledSetter(
-    setPressure,
-    THROTTLEDELAY
-  );
-  const throttledSetTemperature = createThrottledSetter(
-    setTemperature,
-    THROTTLEDELAY
-  );
-  const throttledSetAltitude = createThrottledSetter(
-    setAltitude,
-    THROTTLEDELAY
-  );
-  const throttledSetPyroDrogue = createThrottledSetter(
-    setPyroDrougue,
-    THROTTLEDELAY
-  );
-  const throttledSetPyroMain = createThrottledSetter(
-    setPyroMain,
-    THROTTLEDELAY
-  );
-
-  // Effects
+  // Effects - using direct state setters for immediate updates
   useEffect(() => {
-    throttledSetOperationMode(props.operationMode);
+    setOperationMode(props.operationMode);
     props.operationMode ? setIsArmed(true) : setIsArmed(false);
-    return throttledSetOperationMode.cancel();
-  }, [props.operationMode, throttledSetOperationMode]);
+  }, [props.operationMode]);
 
   useEffect(() => {
-    throttledSetPressure(props.pressure);
-    return throttledSetPressure.cancel();
-  }, [props.pressure, throttledSetPressure]);
+    setPressure(props.pressure);
+  }, [props.pressure]);
 
   useEffect(() => {
-    throttledSetPyroMain(props.pyroMain);
-    return throttledSetPyroMain.cancel();
-  }, [props.pyroMain, throttledSetPyroMain]);
+    setPyroMain(props.pyroMain);
+  }, [props.pyroMain]);
 
   useEffect(() => {
-    throttledSetPyroDrogue(props.pyroDrogue);
-    return throttledSetPyroDrogue.cancel();
-  }, [props.pyroDrogue, throttledSetPyroDrogue]);
-
+    setPyroDrougue(props.pyroDrogue);
+  }, [props.pyroDrogue]);
 
   useEffect(() => {
-    throttledSetTemperature(props.temperature);
-    return throttledSetTemperature.cancel();
-  }, [props.temperature, throttledSetTemperature]);
+    setTemperature(props.temperature);
+  }, [props.temperature]);
 
   useEffect(() => {
-    throttledSetAltitude(props.altitude);
-    setAntenna(determineAntenna(altitude));
-    return throttledSetAltitude.cancel();
-  }, [props.altitude, throttledSetAltitude]);
+    setAltitude(props.altitude);
+    setAntenna(determineAntenna(props.altitude));
+  }, [props.altitude]);
 
   useEffect(() => {
-    throttledSetState(props.state);
-    const { status, color } = getRocketStatusAndColor(state);
+    setState(props.state);
+    const { status, color } = getRocketStatusAndColor(props.state);
     setRocketStatus(status);
     setTextColor(color);
-    return throttledSetState.cancel();
-  }, [props.state, throttledSetState]);
+  }, [props.state]);
+
+  useEffect(() => {
+    setRssi(props.rssi);
+  }, [props.rssi]);
+
+  useEffect(() => {
+    setCommunicationMode(props.communicationMode || "MQTT");
+  }, [props.communicationMode]);
 
   // Event Handlers
   const handleHostChange = (e) => setHost(e.target.value);
@@ -183,7 +157,20 @@ function Sidebar(props) {
             </div>
             <div className="  text-base grid grid-cols-1 items-center justify-center -mt-2 h-full w-full text-gray-800">
               <div className="px-1 grid grid-rows-3 items-center justify-center h-full w-full">
-                <div className=" h-1/3 "> 60 dBm</div>
+                <div className=" h-1/3 ">{rssi} dBm</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-700 relative ">
+            <div className="text-base -mt-5 bg-white px-1 z-10 relative h-full">
+              COMM MODE
+            </div>
+            <div className="text-base grid grid-cols-1 items-center justify-center -mt-2 h-full w-full text-gray-800">
+              <div className="px-1 grid grid-rows-3 items-center justify-center h-full w-full">
+                <div className={`h-1/3 font-bold ${communicationMode === 'Beacon' ? 'text-orange-600' : communicationMode === 'MQTT' ? 'text-green-600' : 'text-gray-500'}`}>
+                  {communicationMode}
+                </div>
               </div>
             </div>
           </div>

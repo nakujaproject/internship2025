@@ -7,9 +7,8 @@ import Chart from "./components/Chart";
 import Video from "./components/Video";
 import MQTT from "paho-mqtt";
 
-let lastChartUpdate = 0;
-const CHART_UPDATE_INTERVAL = 200; // ms, adjust as needed
-const MAX_POINTS = 200; // max points to keep in each chart
+// Removed throttling variables for immediate updates
+const MAX_POINTS = 2000; // max points to keep in each chart
 
 function App() {
   const [telemetry, setTelemetry] = useState({
@@ -22,10 +21,19 @@ function App() {
     pyroDrogue: 0,
     pyroMain: 0,
     altitude: 0,
-    batteryVoltage: 12,
+    altitudeAGL: 0, // Added AGL altitude from barometric sensor
+    batteryVoltage: 0, // Changed default from 12 to 0 to match actual data
+    rssi: 0,
+    velocity: 0,
+    recordNumber: 0,
+    // Add new telemetry fields
+    acceleration: { ax: 0, ay: 0, az: 0, pitch: 0, roll: 0 },
+    gyro: { gx: 0, gy: 0, gz: 0 },
+    communicationMode: "MQTT", // Track if using MQTT or Beacon mode - default to MQTT
+    packetsReceived: 0, // Track total packets from base station
   });
 
-  // connection status tracking
+  // Enhanced connection status tracking
   const [connectionStatus, setConnectionStatus] = useState({
     baseStation: {
       status: "Disconnected",
@@ -34,6 +42,9 @@ function App() {
       status: "Disconnected",
       lastMessageTime: null,
       messageCount: 0,
+      rssi: 0,
+      communicationMode: "MQTT", // MQTT or Beacon - default to MQTT
+      signalQuality: "Unknown", // Good, Fair, Poor based on RSSI
     },
   });
 
@@ -48,8 +59,16 @@ function App() {
   const ws_port = Number(import.meta.env.VITE_WS_PORT);
   const [mqttClient, setMqttClient] = useState(null);
 
-  
-  
+  // Helper function to determine signal quality from RSSI
+  const getSignalQuality = (rssi) => {
+    if (rssi === 0) return "No Signal";
+    if (rssi >= -50) return "Excellent";
+    if (rssi >= -60) return "Good";
+    if (rssi >= -70) return "Fair";
+    if (rssi >= -80) return "Poor";
+    return "Very Poor";
+  };
+
   // Handle arming/disarming
   const handleArmRocket = () => {
     if (!mqttClient) {
@@ -59,11 +78,6 @@ function App() {
 
     // Toggle arming state
     const newArmedState = !telemetry.operationMode;
-    // const message = new MQTT.Message(
-    //   JSON.stringify({
-    //     command: newArmedState ? "ARM" : "DISARM",
-    //   })
-    // );
     const message = new MQTT.Message(
       newArmedState ? "ARM" : "DISARM",
     );
@@ -82,8 +96,6 @@ function App() {
         source: "Basestation",
       };
 
-     
-
       setArmingLogs((prev) => [logEntry, ...prev]);
 
       // Optimistically update the telemetry state
@@ -91,8 +103,7 @@ function App() {
         ...prev,
         operationMode: newArmedState,
       }));
-      } catch (err) {
-
+    } catch (err) {
       const logEntry = {
         timestamp: new Date(),
         action: newArmedState ? "Arm" : "Disarm",
@@ -103,9 +114,7 @@ function App() {
       };
 
       setArmingLogs((prev) => [logEntry, ...prev]);
-
       setError("Failed to send arming command");
-
     }
   };
 
@@ -119,7 +128,6 @@ function App() {
 
     const onConnect = () => {
       console.log("Connected to MQTT Broker");
-      // client.subscribe(["n4/telemetry", "n4/logs"]);
       client.subscribe(["n4/flight-computer-1", "n4/logs"]);
 
       // Update connection status
@@ -128,7 +136,7 @@ function App() {
         baseStation: {
           status: "Connected",
           lastConnectionAttempt: new Date(),
-          connectionAttempts: prev.baseStation.connectionAttempts + 1,
+          connectionAttempts: (prev.baseStation.connectionAttempts || 0) + 1,
         },
       }));
     };
@@ -144,7 +152,7 @@ function App() {
           baseStation: {
             status: "Connection Failed",
             lastConnectionAttempt: new Date(),
-            connectionAttempts: prev.baseStation.connectionAttempts + 1,
+            connectionAttempts: (prev.baseStation.connectionAttempts || 0) + 1,
           },
         }));
       },
@@ -170,9 +178,7 @@ function App() {
 
     const onConnect = () => {
       console.log("Connected to MQTT Broker");
-      // client.subscribe(["n4/telemetry", "n4/logs"]);
       client.subscribe(["n4/flight-computer-1", "n4/logs"]);
-      // client.subscribe("n4/logs");
 
       // Update connection status
       setConnectionStatus((prev) => ({
@@ -194,7 +200,7 @@ function App() {
           baseStation: {
             status: "Disconnected",
             lastConnectionAttempt: new Date(),
-            connectionAttempts: prev.baseStation.connectionAttempts + 1,
+            connectionAttempts: (prev.baseStation.connectionAttempts || 0) + 1,
           },
         }));
       },
@@ -206,11 +212,11 @@ function App() {
 
     setMqttClient(client);
 
-      // Data staleness check
+    // Data staleness check
     const dataStaleInterval = setInterval(() => {
       const currentTime = new Date();
       if (connectionStatus.flightComputer.lastMessageTime) {
-        const timeSinceLastMessage = (currentTime -  new Date(connectionStatus.flightComputer.lastMessageTime)) / 1000;
+        const timeSinceLastMessage = (currentTime - new Date(connectionStatus.flightComputer.lastMessageTime)) / 1000;
 
         if (timeSinceLastMessage > 5) {
           setConnectionStatus((prev) => ({
@@ -230,8 +236,6 @@ function App() {
     };
   }, []);
 
-
-
   // Connection lost handler
   let onConnectionLost = (responseObject) => {
     if (responseObject.errorCode !== 0) {
@@ -245,84 +249,6 @@ function App() {
       }));
     }
   };
-
-// using http server 
-// useEffect(() => {
-//   const fetchTelemetryData = async () => {
-//     try {
-//       const response = await fetch("http://localhost:5000/data");
-//       if (!response.ok) {
-//         throw new Error(`HTTP error! Status: ${response.status}`);
-//       }
-//       const jsonData = await response.json();
-
-//       // Extract relevant telemetry data
-//       const newTelemetry = {
-//         state: jsonData.state,
-//         operationMode: jsonData.operation_mode,
-//         latitude: jsonData.gps_data.latitude,
-//         longitude: jsonData.gps_data.longitude,
-//         altitude: jsonData.gps_data.gps_altitude,
-//         pressure: jsonData.alt_data.pressure,
-//         temperature: jsonData.alt_data.temperature,
-//         pyroDrogue: jsonData.chute_state.pyro1_state,
-//         pyroMain: jsonData.chute_state.pyro2_state,
-//         batteryVoltage: jsonData.battery_voltage,
-//       };
-
-//       // Update state
-//       setTelemetry((prev) => ({
-//         ...prev,
-//         ...newTelemetry,
-//       }));
-
-//       // Update charts
-//       updateCharts(Date.now(), jsonData);
-
-//        // Update flight computer connection status
-//        setConnectionStatus((prev) => ({
-//         ...prev,
-//         flightComputer: {
-//           status: "Connected",
-//         },
-//       }));
-
-//       setConnectionStatus((prev) => ({
-//         ...prev,
-//         baseStation: {
-//           status: "Connected",
-//         },
-//       }));
-
-//     } catch (error) {
-//       console.error("Error fetching telemetry data:", error);
-//       const errorLog = {
-//         timestamp: new Date(),
-//         level: "ERROR",
-//         message: "Error parsing message: " + error.message,
-//         source: "Dashboard",
-//       };
-
-//       setArmingLogs((prevLogs) => [errorLog, ...prevLogs]);
-
-//       setError("Failed to fetch telemetry data");
-
-//       setConnectionStatus((prev) => ({
-//         ...prev,
-//         flightComputer: {
-//           ...prev.flightComputer,
-//           status: "Data Error",
-//         },
-//       }));
-//     }
-//   };
-
-//   // Fetch telemetry data every 1/100th of asecond
-//   const interval = setInterval(fetchTelemetryData, 100);
-
-//   return () => clearInterval(interval);
-// }, []);
-
 
   // Message arrived handler
   let onMessageArrived = (message) => {
@@ -340,154 +266,230 @@ function App() {
           source: receivedData.source || "Flight Computer",
         };
 
-        
         // Add log to flight computer logs
         setArmingLogs((prevLogs) => [newLog, ...prevLogs].slice(0, 10)); // Limit to 10 logs
         return;
       }
 
-      // Update flight computer connection status
+      // Determine communication mode and signal quality
+      let commMode = "MQTT"; // Default to MQTT
+      if (receivedData.communication_mode) {
+        // Use the communication_mode field if it exists
+        commMode = receivedData.communication_mode === "Beacon" ? "Beacon" : "MQTT";
+      }
+      const signalQuality = getSignalQuality(receivedData.wifi_rssi || 0);
+
+      // Update flight computer connection status with enhanced info
       setConnectionStatus((prev) => ({
         ...prev,
         flightComputer: {
           status: "Connected",
+          lastMessageTime: new Date(),
+          messageCount: prev.flightComputer.messageCount + 1,
+          rssi: receivedData.wifi_rssi || 0,
+          communicationMode: commMode,
+          signalQuality: signalQuality,
         },
       }));
 
-      // Update telemetry state
+      // Update telemetry state from JSON with all fields
       setTelemetry((prev) => ({
         ...prev,
-        state: receivedData.state,
-        operationMode: receivedData.operation_mode,
-        latitude: receivedData.gps_data.latitude,
-        longitude: receivedData.gps_data.longitude,
-        altitude: receivedData.gps_data.gps_altitude,
-        pressure: receivedData.alt_data.pressure,
-        temperature: receivedData.alt_data.temperature,
-        pyroDrogue: receivedData.chute_state.pyro1_state,
-        pyroMain: receivedData.chute_state.pyro2_state,
-        batteryVoltage: receivedData.battery_voltage,
+        state: receivedData.state || 0,
+        operationMode: receivedData.operation_mode || 0,
+        latitude: receivedData.gps_data?.latitude || 0,
+        longitude: receivedData.gps_data?.longitude || 0,
+        altitude: receivedData.gps_data?.gps_altitude || 0, // GPS altitude
+        altitudeAGL: receivedData.alt_data?.AGL || 0, // Barometric altitude AGL
+        pressure: receivedData.alt_data?.pressure || 0,
+        temperature: receivedData.alt_data?.temperature || 0,
+        pyroDrogue: receivedData.chute_state?.pyro1_state || 0,
+        pyroMain: receivedData.chute_state?.pyro2_state || 0,
+        batteryVoltage: receivedData.battery_voltage || 0,
+        rssi: receivedData.wifi_rssi || 0,
+        velocity: receivedData.alt_data?.velocity || 0,
+        recordNumber: receivedData.record_number || 0,
+        // Update acceleration and gyro data
+        acceleration: {
+          ax: receivedData.acc_data?.ax || 0,
+          ay: receivedData.acc_data?.ay || 0,
+          az: receivedData.acc_data?.az || 0,
+          pitch: receivedData.acc_data?.pitch || 0,
+          roll: receivedData.acc_data?.roll || 0,
+        },
+        gyro: {
+          gx: receivedData.gyro_data?.gx || 0,
+          gy: receivedData.gyro_data?.gy || 0,
+          gz: receivedData.gyro_data?.gz || 0,
+        },
+        communicationMode: commMode,
+        packetsReceived: receivedData.packets_received || 0,
       }));
 
-      
-      try{
+      try {
         // Update charts
         const time = Date.now();
         updateCharts(time, receivedData);
-        
-      } catch (err){
+      } catch (err) {
         console.error("Error updating charts", err);
       }
 
     } catch (jsonError) {
-      setError("Error parsing message");
-      // If JSON parsing fails, try parsing CSV
-    try {
-      const values = payload.trim().split(',').map(Number);
+      // If JSON parsing fails, try parsing CSV with your 23-field format
+      try {
+        const values = payload.trim().split(',');
+        
+        // Ensure we have the expected number of fields (23 fields total)
+        if (values.length < 23) {
+          throw new Error(`Expected 23 CSV fields, got ${values.length}`);
+        }
 
-      // Map the CSV to a mock structure similar to JSON
-      const receivedData = {
-        operation_mode: values[1],
-        state: values[2],
-        acc_data: {
-          ax: values[3],
-          ay: values[4],
-          az: values[5],
-          pitch: values[6],
-          roll: values[7],
-        },
-        gps_data: {
-          latitude: values[11],
-          longitude: values[12],
-          gps_altitude: values[13],
-        },
-        alt_data: {
-          pressure: values[14],
-          temperature: values[15],
-          AGL: values[16],
-        },
-        chute_state: {
-          pyro1_state: values[17]=== 1 ? 1 : 0, // Placeholder logic
-          pyro2_state: values[18] === 1 ? 1 : 0,
-        },
-        battery_voltage: values[19],
-      };
+        // Convert string values to numbers where appropriate
+        const numericValues = values.map((val, index) => {
+          // GPS coordinates need higher precision
+          if (index === 11 || index === 12) { // latitude, longitude
+            return parseFloat(val);
+          }
+          return parseFloat(val) || 0;
+        });
 
-      setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: { status: "Connected" },
-      }));
+        // Map the CSV to telemetry structure based on your flight computer format:
+        const receivedData = {
+          record_number: numericValues[0],
+          operation_mode: numericValues[1],
+          state: numericValues[2],
+          acc_data: {
+            ax: numericValues[3],
+            ay: numericValues[4],
+            az: numericValues[5],
+            pitch: numericValues[6],
+            roll: numericValues[7],
+          },
+          gyro_data: {
+            gx: numericValues[8],
+            gy: numericValues[9],
+            gz: numericValues[10],
+          },
+          gps_data: {
+            latitude: numericValues[11],
+            longitude: numericValues[12],
+            gps_altitude: numericValues[13],
+            time: numericValues[14],
+          },
+          alt_data: {
+            pressure: numericValues[15],
+            temperature: numericValues[16],
+            AGL: numericValues[17],
+            velocity: numericValues[18],
+          },
+          chute_state: {
+            pyro1_state: numericValues[19],
+            pyro2_state: numericValues[20],
+          },
+          battery_voltage: numericValues[21],
+          wifi_rssi: numericValues[22],
+          communication_mode: "MQTT", // Default to MQTT for CSV data
+        };
 
-      // Update telemetry from CSV-mapped structure
-      setTelemetry((prev) => ({
-        ...prev,
-        state: receivedData.state,
-        operationMode: receivedData.operation_mode,
-        latitude: receivedData.gps_data.latitude,
-        longitude: receivedData.gps_data.longitude,
-        altitude: receivedData.gps_data.gps_altitude,
-        pressure: receivedData.alt_data.pressure,
-        temperature: receivedData.alt_data.temperature,
-        pyroDrogue: receivedData.chute_state.pyro1_state,
-        pyroMain: receivedData.chute_state.pyro2_state,
-        batteryVoltage: receivedData.battery_voltage,
-      }));
+        // Determine signal quality
+        const signalQuality = getSignalQuality(receivedData.wifi_rssi);
 
-      // Optional: update charts from parsed CSV if chart logic supports it
-      const time = Date.now();
-      updateCharts(time, receivedData);
+        setConnectionStatus((prev) => ({
+          ...prev,
+          flightComputer: {
+            status: "Connected",
+            lastMessageTime: new Date(),
+            messageCount: prev.flightComputer.messageCount + 1,
+            rssi: receivedData.wifi_rssi,
+            communicationMode: receivedData.communication_mode,
+            signalQuality: signalQuality,
+          },
+        }));
 
-    } catch (csvError) {
-      // Failed to parse as both JSON and CSV
-      setError("Error parsing message: Not valid JSON or CSV");
-      setConnectionStatus((prev) => ({
-        ...prev,
-        flightComputer: {
-          ...prev.flightComputer,
-          status: "Data Error",
-        },
-      }));
-    }
-      // setConnectionStatus((prev) => ({
-      //   ...prev,
-      //   flightComputer: {
-      //     ...prev.flightComputer,
-      //     status: "Data Error",
-      //   },
-      // }));
+        // Update telemetry from CSV-mapped structure
+        setTelemetry((prev) => ({
+          ...prev,
+          state: receivedData.state,
+          operationMode: receivedData.operation_mode,
+          latitude: receivedData.gps_data.latitude,
+          longitude: receivedData.gps_data.longitude,
+          altitude: receivedData.gps_data.gps_altitude,
+          altitudeAGL: receivedData.alt_data.AGL,
+          pressure: receivedData.alt_data.pressure,
+          temperature: receivedData.alt_data.temperature,
+          pyroDrogue: receivedData.chute_state.pyro1_state,
+          pyroMain: receivedData.chute_state.pyro2_state,
+          batteryVoltage: receivedData.battery_voltage,
+          rssi: receivedData.wifi_rssi,
+          velocity: receivedData.alt_data.velocity,
+          recordNumber: receivedData.record_number,
+          acceleration: {
+            ax: receivedData.acc_data.ax,
+            ay: receivedData.acc_data.ay,
+            az: receivedData.acc_data.az,
+            pitch: receivedData.acc_data.pitch,
+            roll: receivedData.acc_data.roll,
+          },
+          gyro: {
+            gx: receivedData.gyro_data.gx,
+            gy: receivedData.gyro_data.gy,
+            gz: receivedData.gyro_data.gz,
+          },
+          communicationMode: receivedData.communication_mode,
+        }));
+
+        // Update charts from parsed CSV
+        const time = Date.now();
+        updateCharts(time, receivedData);
+
+      } catch (csvError) {
+        // Failed to parse as both JSON and CSV
+        console.error("CSV parsing error:", csvError);
+        setError(`Error parsing message: ${csvError.message}`);
+        setConnectionStatus((prev) => ({
+          ...prev,
+          flightComputer: {
+            ...prev.flightComputer,
+            status: "Data Error",
+          },
+        }));
+      }
     }
   };
 
   const updateCharts = (time, received_data) => {
-   if (time - lastChartUpdate < CHART_UPDATE_INTERVAL) return;
-   lastChartUpdate = time;
+    // Remove throttling for immediate updates
+    // Check if chart refs exist before updating
+    if (!altitudeChartRef.current || !velocityChartRef.current || !accelerationChartRef.current) {
+      return;
+    }
 
-   // --- Altitude ---
-   const alt0 = altitudeChartRef.current.data.datasets[0].data;
-   const alt1 = altitudeChartRef.current.data.datasets[1].data;
-   alt0.push({ x: time, y: received_data.gps_data.gps_altitude });
-   alt1.push({ x: time, y: received_data.alt_data.AGL });
-   if (alt0.length > MAX_POINTS) alt0.shift();
-   if (alt1.length > MAX_POINTS) alt1.shift();
-   altitudeChartRef.current.update("quiet");
+    // --- Altitude (GPS vs Barometric) ---
+    const alt0 = altitudeChartRef.current.data.datasets[0].data;
+    const alt1 = altitudeChartRef.current.data.datasets[1].data;
+    alt0.push({ x: time, y: received_data.gps_data?.gps_altitude || 0 });
+    alt1.push({ x: time, y: received_data.alt_data?.AGL || 0 });
+    if (alt0.length > MAX_POINTS) alt0.shift();
+    if (alt1.length > MAX_POINTS) alt1.shift();
+    altitudeChartRef.current.update("quiet");
 
-   // --- Velocity ---
-   const vel0 = velocityChartRef.current.data.datasets[0].data;
-   vel0.push({ x: time, y: received_data.alt_data.velocity });
-   if (vel0.length > MAX_POINTS) vel0.shift();
-   velocityChartRef.current.update("quiet");
+    // --- Velocity ---
+    const vel0 = velocityChartRef.current.data.datasets[0].data;
+    vel0.push({ x: time, y: received_data.alt_data?.velocity || 0 });
+    if (vel0.length > MAX_POINTS) vel0.shift();
+    velocityChartRef.current.update("quiet");
 
-   // --- Acceleration ---
-   const acc0 = accelerationChartRef.current.data.datasets[0].data;
-   const acc1 = accelerationChartRef.current.data.datasets[1].data;
-   const acc2 = accelerationChartRef.current.data.datasets[2].data;
-   acc0.push({ x: time, y: received_data.acc_data.ax });
-   acc1.push({ x: time, y: received_data.acc_data.ay });
-   acc2.push({ x: time, y: received_data.acc_data.az });
-   if (acc0.length > MAX_POINTS) acc0.shift();
-   if (acc1.length > MAX_POINTS) acc1.shift();
-   if (acc2.length > MAX_POINTS) acc2.shift();
-   accelerationChartRef.current.update("quiet");
+    // --- Acceleration ---
+    const acc0 = accelerationChartRef.current.data.datasets[0].data;
+    const acc1 = accelerationChartRef.current.data.datasets[1].data;
+    const acc2 = accelerationChartRef.current.data.datasets[2].data;
+    acc0.push({ x: time, y: received_data.acc_data?.ax || 0 });
+    acc1.push({ x: time, y: received_data.acc_data?.ay || 0 });
+    acc2.push({ x: time, y: received_data.acc_data?.az || 0 });
+    if (acc0.length > MAX_POINTS) acc0.shift();
+    if (acc1.length > MAX_POINTS) acc1.shift();
+    if (acc2.length > MAX_POINTS) acc2.shift();
+    accelerationChartRef.current.update("quiet");
   };
 
   return (
@@ -497,11 +499,15 @@ function App() {
           <Sidebar
             state={telemetry.state}
             operationMode={telemetry.operationMode}
-            altitude={telemetry.altitude}
+            altitude={telemetry.altitudeAGL} // Use barometric altitude for primary display
             pressure={telemetry.pressure}
             temperature={telemetry.temperature}
             pyroDrogue={telemetry.pyroDrogue}
             pyroMain={telemetry.pyroMain}
+            velocity={telemetry.velocity} // Pass velocity to sidebar if needed
+            recordNumber={telemetry.recordNumber} // Pass record number for packet tracking
+            rssi={telemetry.rssi} // Pass RSSI to sidebar
+            communicationMode={telemetry.communicationMode} // Pass communication mode to sidebar
             onConnect={handleConnect}
             connectionStatus={connectionStatus}
             onArmRocket={handleArmRocket}
@@ -512,6 +518,10 @@ function App() {
           <Header
             connectionStatus={connectionStatus}
             batteryVoltage={telemetry.batteryVoltage}
+            rssi={telemetry.rssi}
+            communicationMode={telemetry.communicationMode} // Pass communication mode
+            recordNumber={telemetry.recordNumber} // Pass record number
+            packetsReceived={telemetry.packetsReceived} // Pass total packets
           />
           <div className="mt-10 md:mt-16 grid grid-cols-1 md:grid-cols-2 gap-2 w-full p-2">
             <div className="flex flex-col space-y-2">
