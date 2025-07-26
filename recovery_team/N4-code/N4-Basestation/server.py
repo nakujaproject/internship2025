@@ -10,7 +10,7 @@ from datetime import datetime
 
 # === CONFIG ===
 SERIAL_BAUD = 115200
-MQTT_BROKER = "localhost"
+MQTT_BROKER = "localhost"  # Update with your broker IP
 MQTT_PORT = 1883
 MQTT_TELEMETRY_TOPIC = "n4/flight-computer-1"
 MQTT_COMMAND_TOPIC = "n4/commands"
@@ -56,7 +56,10 @@ def open_serial():
                 port=port,
                 baudrate=SERIAL_BAUD,
                 timeout=1,
-                write_timeout=1
+                write_timeout=1,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE
             )
             time.sleep(2)  # Wait for connection
             serial_conn.reset_input_buffer()
@@ -110,69 +113,99 @@ class ConnectionStatus:
 connection_status = ConnectionStatus()
 
 # === MQTT CLIENT ===
-client = mqtt.Client()
+client = mqtt.Client(protocol=mqtt.MQTTv311)  # Using protocol version 3.1.1
 mqtt_connected = False
 
-def on_mqtt_connect(*args):
+def on_mqtt_connect(client, userdata, flags, rc):
     global mqtt_connected
-    mqtt_connected = True
-    client.subscribe(MQTT_COMMAND_TOPIC)
-    client.subscribe(MQTT_TELEMETRY_TOPIC)
-    logger.info("MQTT connected")
+    if rc == 0:
+        mqtt_connected = True
+        client.subscribe(MQTT_COMMAND_TOPIC)
+        client.subscribe(MQTT_TELEMETRY_TOPIC)
+        logger.info("✅ MQTT connected")
+    else:
+        mqtt_connected = False
+        logger.error(f"❌ MQTT connection failed with code {rc}")
 
-def on_mqtt_disconnect(*args):
+def on_mqtt_disconnect(client, userdata, rc):
     global mqtt_connected
     mqtt_connected = False
-    logger.warning("MQTT disconnected")
+    logger.warning("⚠️ MQTT disconnected")
 
 def on_mqtt_message(client, userdata, msg):
     try:
         if msg.topic == MQTT_COMMAND_TOPIC:
             cmd = msg.payload.decode().strip()
-            logger.info(f"MQTT command: {cmd}")
+            logger.info(f"📨 MQTT command: {cmd}")
             send_command(cmd, "MQTT")
+            
         elif msg.topic == MQTT_TELEMETRY_TOPIC:
-            # Forward and normalize telemetry from flight computer
+            payload = msg.payload.decode(errors='replace').strip()
+            if not payload:
+                return
+                
+            # Forward to app with consistent format
             try:
-                payload = msg.payload.decode(errors='replace')
-                # Try to parse as JSON
-                if payload.strip().startswith("{"):
-                    data = json.loads(payload)
-                    data["communication_mode"] = "MQTT"
-                # Try to parse as CSV only if it looks like CSV (no braces or colons)
-                elif ":" not in payload and "{" not in payload and "," in payload:
-                    parts = payload.split(',')
-                    if len(parts) >= 23:
-                        # Forward all fields as a dict, do not slice or drop any
-                        data = {f"field_{i+1}": parts[i] for i in range(len(parts))}
-                        data["fields"] = parts  # full raw CSV fields
-                        # Optionally, map known fields for clarity (if present)
-                        try:
-                            data["record_number"] = int(parts[0])
-                            data["state"] = int(parts[2])
-                            data["acc_data"] = {
-                                "ax": float(parts[3]),
-                                "ay": float(parts[4]),
-                                "az": float(parts[5])
-                            }
-                            data["rssi"] = parts[22]
-                        except Exception:
-                            pass
-                        data["timestamp"] = time.time()
-                        data["communication_mode"] = "MQTT"
-                    else:
-                        logger.debug(f"[MQTT] Ignored non-telemetry line: {payload}")
-                        return
+                # Check if it's CSV format (like your example)
+                if "," in payload and not payload.startswith("{"):
+                    fields = payload.split(",")
+                    if len(fields) >= 23:  # Match your CSV format
+                        data = {
+                            "record_number": int(fields[0]),
+                            "operation_mode": int(fields[1]),
+                            "state": int(fields[2]),
+                            "acc_data": {
+                                "ax": float(fields[3]),
+                                "ay": float(fields[4]),
+                                "az": float(fields[5]),
+                                "pitch": float(fields[6]),
+                                "roll": float(fields[7])
+                            },
+                            "gyro_data": {
+                                "gx": float(fields[8]),
+                                "gy": float(fields[9]),
+                                "gz": float(fields[10])
+                            },
+                            "gps_data": {
+                                "latitude": float(fields[11]),
+                                "longitude": float(fields[12]),
+                                "altitude": float(fields[13]),
+                                "time": int(fields[14])
+                            },
+                            "alt_data": {
+                                "pressure": float(fields[15]),
+                                "temperature": float(fields[16]),
+                                "AGL": float(fields[17]),
+                                "velocity": float(fields[18])
+                            },
+                            "chute_state": {
+                                "drogue": int(fields[19]),
+                                "main": int(fields[20])
+                            },
+                            "battery_voltage": float(fields[21]),
+                            "wifi_rssi": int(fields[22]),
+                            "communication_mode": "MQTT",
+                            "timestamp": time.time(),
+                            "raw": payload  # Include raw data for reference
+                        }
+                        client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                        connection_status.update_mqtt()
+                        logger.debug(f"📡 Forwarded MQTT telemetry (CSV format)")
                 else:
-                    logger.debug(f"[MQTT] Ignored unknown line: {payload}")
-                    return
-                client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                connection_status.update_mqtt()
-                logger.debug(f"Forwarded MQTT telemetry: {data}")
+                    # Try to parse as JSON if not CSV
+                    try:
+                        data = json.loads(payload)
+                        data["communication_mode"] = "MQTT"
+                        client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                        connection_status.update_mqtt()
+                        logger.debug(f"📡 Forwarded MQTT telemetry (JSON format)")
+                    except json.JSONDecodeError:
+                        logger.warning(f"⚠️ Unrecognized MQTT payload format: {payload}")
             except Exception as e:
-                logger.error(f"[MQTT] Telemetry parse error: {e}")
+                logger.error(f"❌ MQTT telemetry processing error: {e}")
+                
     except Exception as e:
-        logger.error(f"MQTT error: {e}")
+        logger.error(f"❌ MQTT message handling error: {e}")
 
 client.on_connect = on_mqtt_connect
 client.on_disconnect = on_mqtt_disconnect
@@ -181,129 +214,116 @@ client.on_message = on_mqtt_message
 try:
     client.connect(MQTT_BROKER, MQTT_PORT, 60)
     client.loop_start()
+    logger.info("🔌 MQTT setup initiated...")
 except Exception as e:
-    logger.error(f"MQTT setup failed: {e}")
+    logger.error(f"❌ MQTT setup failed: {e}")
 
 # === DATA HANDLING ===
 def process_serial_data(line):
-    """Process incoming serial data and forward to app"""
+    """Process incoming serial data and forward to app with consistent format"""
     try:
-        # Skip log/status lines
-        if line.startswith("LOG:") or line.startswith("STATUS:"):
-            logger.debug(f"[SERIAL] Skipped non-telemetry line: {line}")
+        line = line.strip()
+        if not line:
             return
-        # Try to parse as JSON
-        if line.strip().startswith("{"):
+            
+        # Skip log/status messages
+        if line.startswith(("LOG:", "STATUS:")):
+            logger.debug(f"📝 [SERIAL] {line}")
+            return
+            
+        # Check if it's CSV format (like your MQTT data)
+        if "," in line and not line.startswith("{"):
+            fields = line.split(",")
+            if len(fields) >= 23:  # Match your CSV format
+                data = {
+                    "record_number": int(fields[0]),
+                    "operation_mode": int(fields[1]),
+                    "state": int(fields[2]),
+                    "acc_data": {
+                        "ax": float(fields[3]),
+                        "ay": float(fields[4]),
+                        "az": float(fields[5]),
+                        "pitch": float(fields[6]),
+                        "roll": float(fields[7])
+                    },
+                    "gyro_data": {
+                        "gx": float(fields[8]),
+                        "gy": float(fields[9]),
+                        "gz": float(fields[10])
+                    },
+                    "gps_data": {
+                        "latitude": float(fields[11]),
+                        "longitude": float(fields[12]),
+                        "altitude": float(fields[13]),
+                        "time": int(fields[14])
+                    },
+                    "alt_data": {
+                        "pressure": float(fields[15]),
+                        "temperature": float(fields[16]),
+                        "AGL": float(fields[17]),
+                        "velocity": float(fields[18])
+                    },
+                    "chute_state": {
+                        "drogue": int(fields[19]),
+                        "main": int(fields[20])
+                    },
+                    "battery_voltage": float(fields[21]),
+                    "wifi_rssi": int(fields[22]),
+                    "communication_mode": "BEACON",
+                    "timestamp": time.time(),
+                    "raw": line  # Include raw data for reference
+                }
+                client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                connection_status.update_serial()
+                logger.debug(f"📡 Forwarded beacon telemetry")
+            else:
+                logger.warning(f"⚠️ Invalid CSV format: {line}")
+        else:
+            # Try to parse as JSON if not CSV
             try:
                 data = json.loads(line)
                 data["communication_mode"] = "BEACON"
-            except Exception as e:
-                logger.debug(f"[SERIAL] Ignored invalid/corrupt JSON: {line}")
-                return
-        # Try to parse as CSV only if it looks like CSV (no braces or colons)
-        elif ":" not in line and "{" not in line and "," in line:
-            parts = line.split(',')
-            if len(parts) >= 23:
-                try:
-                    # Forward all fields as a dict, do not slice or drop any
-                    data = {f"field_{i+1}": parts[i] for i in range(len(parts))}
-                    data["fields"] = parts  # full raw CSV fields
-                    # Optionally, map known fields for clarity (if present)
-                    try:
-                        data["record_number"] = int(parts[0])
-                        data["state"] = int(parts[2])
-                        data["acc_data"] = {
-                            "ax": float(parts[3]),
-                            "ay": float(parts[4]),
-                            "az": float(parts[5])
-                        }
-                        data["rssi"] = parts[22]
-                    except Exception:
-                        pass
-                    data["communication_mode"] = "BEACON"
-                    data["timestamp"] = time.time()
-                except Exception as e:
-                    logger.debug(f"[SERIAL] Ignored corrupt CSV: {line}")
-                    return
-            else:
-                logger.debug(f"[SERIAL] Ignored non-telemetry line: {line}")
-                return
-        else:
-            logger.debug(f"[SERIAL] Ignored unknown line: {line}")
-            return
-        # Forward to app
-        client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-        connection_status.update_serial()
-        logger.debug(f"Forwarded beacon data: {data}")
+                client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                connection_status.update_serial()
+                logger.debug(f"📡 Forwarded beacon telemetry (JSON format)")
+            except json.JSONDecodeError:
+                logger.warning(f"⚠️ Unrecognized serial payload format: {line}")
+                
     except Exception as e:
-        logger.error(f"Serial processing error: {e}")
-
-
-# --- Command retry logic ---
-import threading
-command_retry_threads = {}
+        logger.error(f"❌ Serial data processing error: {e}")
 
 def send_command(cmd, source):
-    """Send command to flight computer, with retry for mode commands until data is received."""
-    mode_cmds = ["CMD_MQTT_MODE", "CMD_BEACON_MODE", "CMD_DUAL_MODE"]
-    cmd_upper = cmd.strip().upper()
-    if cmd_upper in mode_cmds:
-        # Start a retry thread for this mode command
-        if cmd_upper in command_retry_threads and command_retry_threads[cmd_upper].is_alive():
-            logger.info(f"Retry thread for {cmd_upper} already running.")
-        else:
-            t = threading.Thread(target=retry_mode_command, args=(cmd_upper, source), daemon=True)
-            command_retry_threads[cmd_upper] = t
-            t.start()
-        return True
-    # For non-mode commands, just send once
-    return _send_command_once(cmd, source)
-
-def _send_command_once(cmd, source):
+    """Send command to flight computer"""
     if not serial_conn or not serial_conn.is_open:
         if not open_serial():
             return False
+    
     try:
-        serial_conn.write((cmd + "\n").encode())
-        logger.info(f"Sent command: {cmd} from {source}")
-        # If switching to MQTT mode, ensure MQTT client is connected and subscribed
-        if cmd.strip().upper() == "CMD_MQTT_MODE":
-            try:
-                if not mqtt_connected:
-                    logger.info("[MQTT] Reconnecting MQTT client for CMD_MQTT_MODE...")
-                    client.reconnect()
-                client.subscribe(MQTT_COMMAND_TOPIC)
-                client.subscribe(MQTT_TELEMETRY_TOPIC)
-                logger.info("[MQTT] Subscribed to command and telemetry topics after CMD_MQTT_MODE")
-            except Exception as e:
-                logger.error(f"[MQTT] Error ensuring MQTT setup: {e}")
-        return True
+        with serial_lock:
+            serial_conn.reset_input_buffer()
+            serial_conn.reset_output_buffer()
+            serial_conn.write((cmd + "\n").encode())
+            serial_conn.flush()
+            
+            logger.info(f"📤 Sent command: {cmd} (source: {source})")
+            
+            # Wait for response
+            start_time = time.time()
+            while time.time() - start_time < COMMAND_TIMEOUT:
+                if serial_conn.in_waiting:
+                    response = serial_conn.readline().decode(errors='replace').strip()
+                    if response:
+                        logger.info(f"📩 Response: {response}")
+                        return True
+                time.sleep(0.1)
+                
+            logger.warning("⌛ No response received")
+            return False
+            
     except Exception as e:
-        logger.error(f"Command failed: {e}")
+        logger.error(f"❌ Command failed: {e}")
         close_serial()
         return False
-
-def retry_mode_command(cmd_upper, source):
-    """Keep sending the mode command every 2s until data is received via the expected channel."""
-    logger.info(f"Starting retry thread for {cmd_upper}")
-    last_data_time = 0
-    def got_data():
-        mode = cmd_upper.replace("CMD_", "").replace("_MODE", "")
-        now = time.time()
-        if mode == "MQTT":
-            # Data received via MQTT
-            return (now - connection_status.last_mqtt) < 3
-        elif mode == "BEACON":
-            # Data received via serial
-            return (now - connection_status.last_serial) < 3
-        elif mode == "DUAL":
-            # Data received via both
-            return ((now - connection_status.last_serial) < 3) and ((now - connection_status.last_mqtt) < 3)
-        return False
-    while not got_data():
-        _send_command_once(cmd_upper, source)
-        time.sleep(2)
-    logger.info(f"Data received for {cmd_upper}, stopping retry thread.")
 
 # === MAIN LOOP ===
 def main_loop():
@@ -314,7 +334,7 @@ def main_loop():
         try:
             # Check serial for data
             if serial_conn and serial_conn.is_open:
-                if serial_conn.in_waiting:
+                while serial_conn.in_waiting:
                     line = serial_conn.readline().decode(errors='replace').strip()
                     if line:
                         process_serial_data(line)
@@ -325,7 +345,9 @@ def main_loop():
                     "mode": connection_status.get_mode(),
                     "timestamp": time.time(),
                     "serial_connected": serial_conn is not None and serial_conn.is_open,
-                    "mqtt_connected": mqtt_connected
+                    "mqtt_connected": mqtt_connected,
+                    "last_serial": connection_status.last_serial,
+                    "last_mqtt": connection_status.last_mqtt
                 }
                 client.publish(MQTT_STATUS_TOPIC, json.dumps(status))
                 last_status = time.time()
@@ -335,7 +357,7 @@ def main_loop():
         except KeyboardInterrupt:
             break
         except Exception as e:
-            logger.error(f"Main loop error: {e}")
+            logger.error(f"❌ Main loop error: {e}")
             time.sleep(1)
 
 def command_interface():
@@ -358,7 +380,7 @@ def command_interface():
             print(f"Error: {e}")
 
 if __name__ == '__main__':
-    logger.info("Starting N4 Base Station")
+    logger.info("🚀 Starting N4 Base Station Server")
     
     # Start main loop in background
     loop_thread = threading.Thread(target=main_loop, daemon=True)
@@ -370,4 +392,4 @@ if __name__ == '__main__':
     finally:
         close_serial()
         client.disconnect()
-        logger.info("Shutdown complete")
+        logger.info("👋 Shutdown complete")
