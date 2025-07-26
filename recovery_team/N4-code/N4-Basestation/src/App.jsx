@@ -118,6 +118,76 @@ function App() {
     }
   };
 
+  // Handle command sending from the sidebar
+  const handleSendCommand = (command) => {
+    if (!mqttClient) {
+      setError("MQTT not connected. Cannot send command.");
+      return;
+    }
+
+    // Map frontend command to backend-expected string
+    let backendCommand = "";
+    switch (command.toUpperCase()) {
+      case "ARM":
+      case "DISARM":
+      case "RESET":
+        backendCommand = command.toUpperCase();
+        break;
+      case "MQTT":
+        backendCommand = "CMD_MQTT_MODE";
+        break;
+      case "BEACON":
+        backendCommand = "CMD_BEACON_MODE";
+        break;
+      case "DUAL":
+        backendCommand = "CMD_DUAL_MODE";
+        break;
+      case "AUTO_ON":
+        backendCommand = "CMD_AUTO_ON";
+        break;
+      case "AUTO_OFF":
+        backendCommand = "CMD_AUTO_OFF";
+        break;
+      case "STATUS":
+        backendCommand = "CMD_STATUS";
+        break;
+      default:
+        backendCommand = command.toUpperCase();
+    }
+
+    const message = new MQTT.Message(backendCommand);
+    message.destinationName = "n4/commands";
+
+    try {
+      mqttClient.send(message);
+
+      // Log the command action
+      const logEntry = {
+        timestamp: new Date(),
+        action: `Command: ${backendCommand}`,
+        status: "Sent",
+        level: "INFO",
+        message: `Command \"${backendCommand}\" sent successfully`,
+        source: "Basestation",
+      };
+
+      setArmingLogs((prev) => [logEntry, ...prev]);
+
+    } catch (err) {
+      const logEntry = {
+        timestamp: new Date(),
+        action: `Command: ${backendCommand}`,
+        status: "Failed",
+        level: "ERROR",
+        message: `Command failed: ${err.message}`,
+        source: "Basestation",
+      };
+
+      setArmingLogs((prev) => [logEntry, ...prev]);
+      setError(`Failed to send command: ${backendCommand}`);
+    }
+  };
+
   // manual connection handler
   const handleConnect = (host, port) => {
     const client = new MQTT.Client(
@@ -128,7 +198,7 @@ function App() {
 
     const onConnect = () => {
       console.log("Connected to MQTT Broker");
-      client.subscribe(["n4/flight-computer-1", "n4/logs"]);
+      client.subscribe(["n4/app/flight-computer-1", "n4/app/logs"]);
 
       // Update connection status
       setConnectionStatus((prev) => ({
@@ -178,7 +248,7 @@ function App() {
 
     const onConnect = () => {
       console.log("Connected to MQTT Broker");
-      client.subscribe(["n4/flight-computer-1", "n4/logs"]);
+      client.subscribe(["n4/app/flight-computer-1", "n4/app/logs"]);
 
       // Update connection status
       setConnectionStatus((prev) => ({
@@ -256,6 +326,9 @@ function App() {
 
     try {
       const receivedData = JSON.parse(message.payloadString);
+      // Debug: log the full received data and communication_mode
+      console.log("[DEBUG] Received telemetry:", receivedData);
+      console.log("[DEBUG] communication_mode field:", receivedData.communication_mode);
 
       // Check if the message is a log message
       if (message.destinationName === "n4/logs") {
@@ -274,8 +347,14 @@ function App() {
       // Determine communication mode and signal quality
       let commMode = "MQTT"; // Default to MQTT
       if (receivedData.communication_mode) {
-        // Use the communication_mode field if it exists
-        commMode = receivedData.communication_mode === "Beacon" ? "Beacon" : "MQTT";
+        let modeStr = String(receivedData.communication_mode).trim().toLowerCase();
+        if (modeStr === "beacon") {
+          commMode = "Beacon";
+        } else if (modeStr === "mqtt") {
+          commMode = "MQTT";
+        } else {
+          commMode = "MQTT"; // fallback to MQTT for unknown values
+        }
       }
       const signalQuality = getSignalQuality(receivedData.wifi_rssi || 0);
 
@@ -322,7 +401,7 @@ function App() {
           gy: receivedData.gyro_data?.gy || 0,
           gz: receivedData.gyro_data?.gz || 0,
         },
-        communicationMode: commMode,
+        communicationMode: commMode, // Always 'Beacon' or 'MQTT'
         packetsReceived: receivedData.packets_received || 0,
       }));
 
@@ -407,6 +486,18 @@ function App() {
         }));
 
         // Update telemetry from CSV-mapped structure
+        // Determine commMode for CSV as well (since CSV sets communication_mode: 'MQTT' by default)
+        let commMode = "MQTT";
+        if (receivedData.communication_mode) {
+          let modeStr = String(receivedData.communication_mode).trim().toLowerCase();
+          if (modeStr === "beacon") {
+            commMode = "Beacon";
+          } else if (modeStr === "mqtt") {
+            commMode = "MQTT";
+          } else {
+            commMode = "MQTT"; // fallback to MQTT for unknown values
+          }
+        }
         setTelemetry((prev) => ({
           ...prev,
           state: receivedData.state,
@@ -435,7 +526,7 @@ function App() {
             gy: receivedData.gyro_data.gy,
             gz: receivedData.gyro_data.gz,
           },
-          communicationMode: receivedData.communication_mode,
+          communicationMode: commMode, // Always 'Beacon' or 'MQTT'
         }));
 
         // Update charts from parsed CSV
@@ -511,6 +602,8 @@ function App() {
             onConnect={handleConnect}
             connectionStatus={connectionStatus}
             onArmRocket={handleArmRocket}
+            onSendCommand={handleSendCommand} // Add command handler
+            isConnected={connectionStatus.baseStation.status === "Connected"} // Add connection status
             armingLogs={armingLogs}
           />
         </div>
