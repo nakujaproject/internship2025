@@ -1,6 +1,45 @@
 # Nakuja N4 Basestation
 
-For monitoring telemetry and remote rocket setup.
+For monitoring telemetry and remote rocket setup with automatic service startup and USB auto-reconnection.
+
+---
+
+## 🚀 Quick Start
+
+### Easy Startup (Recommended)
+```bash
+# Option 1: Use the startup script
+python start_basestation.py
+
+# Option 2: Use the batch file (Windows)
+start_basestation.bat
+
+# Option 3: Manual startup
+python server.py
+```
+
+**What gets started automatically:**
+- ✅ Python server with auto USB reconnection
+- ✅ React development server (`npm run dev`)
+- ✅ Tileserver for maps
+- ✅ Mosquitto MQTT broker
+- ✅ Automatic port 8080 cleanup
+
+---
+
+## 🔧 Features
+
+### Auto USB Reconnection
+- **Smart Detection**: Automatically detects ESP32 reconnection
+- **No Loops**: Graceful handling of USB disconnection without infinite loops
+- **Background Monitoring**: Continuous USB port monitoring
+- **Seamless Recovery**: Automatic reconnection when USB is plugged back in
+
+### Integrated Startup
+- **One Command**: Start entire base station with single command
+- **Process Management**: Automatic cleanup of conflicting processes
+- **Service Coordination**: All services start in correct order
+- **Graceful Shutdown**: Clean termination of all services
 
 ---
 
@@ -10,9 +49,9 @@ For monitoring telemetry and remote rocket setup.
   - Git
   - Node.js
   - npm 
-  - Docker
   - Mosquitto
   - Python 3.x
+  - Windows PowerShell or Command Prompt
 
 ---
 

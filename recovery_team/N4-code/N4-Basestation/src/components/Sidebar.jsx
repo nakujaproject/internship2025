@@ -100,9 +100,9 @@ function Sidebar(props) {
         case "beacon":
           setCurrentCommMode("Beacon");
           break;
-        case "dual":
-          setCurrentCommMode("Dual");
-          break;
+        // case "dual":
+        //   setCurrentCommMode("Dual");
+        //   break;
         case "auto_on":
           setAutoFallbackEnabled(true);
           break;
@@ -261,7 +261,7 @@ function Sidebar(props) {
             <div className="text-sm uppercase -mt-6 bg-white px-1 z-10 h-1/3">
               Communication Mode
             </div>
-            <div className="text-base h-2/3 w-full pt-1 uppercase items-center text-center grid grid-cols-3 gap-1">
+            <div className="text-base h-2/3 w-full pt-1 uppercase items-center text-center grid grid-cols-2 gap-2*">
               <Button
                 onClick={() => handleCommandClick({command: "mqtt"})}
                 className={`px-1 py-1 rounded-full shadow-md border-2 border-box font-bold text-xs uppercase transition-all duration-200 ${
@@ -288,7 +288,7 @@ function Sidebar(props) {
               >
                 BEACON
               </Button>
-              <Button
+              {/* <Button
                 onClick={() => handleCommandClick({command: "dual"})}
                 className={`px-1 py-1 rounded-full shadow-md border-2 border-box font-bold text-xs uppercase transition-all duration-200 ${
                   currentCommMode === "Dual" 
@@ -300,7 +300,7 @@ function Sidebar(props) {
                 disabled={!props.isConnected}
               >
                 DUAL
-              </Button>
+              </Button> */}
             </div>
           </div>
 

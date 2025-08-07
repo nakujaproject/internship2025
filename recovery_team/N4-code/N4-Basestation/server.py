@@ -7,6 +7,12 @@ import paho.mqtt.client as mqtt
 from serial.tools import list_ports
 from threading import Lock
 from datetime import datetime
+import subprocess
+import os
+import signal
+import atexit
+import csv
+from pathlib import Path
 
 # === CONFIG ===
 SERIAL_BAUD = 115200
@@ -22,13 +28,261 @@ CONNECTION_TIMEOUT = 15000  # 15 seconds in milliseconds
 HEARTBEAT_INTERVAL = 5      # Send status every 5 seconds
 COMMAND_TIMEOUT = 3         # Wait 3 seconds for command response
 AUTO_DETECT_INTERVAL = 5    # Check for active connection every 5 seconds
+USB_RECONNECT_INTERVAL = 2  # Check for USB reconnection every 2 seconds
+USB_MONITOR_ENABLED = True  # Enable/disable USB monitoring
+PORT_8080 = 8080           # Port for development server
+
+# === CSV LOGGING CONFIG ===
+CSV_LOGGING_ENABLED = True
+CSV_LOG_DIR = "telemetry_logs"
+CSV_FIELDNAMES = [
+    'timestamp', 'iso_timestamp', 'record_number', 'operation_mode', 'state',
+    'ax', 'ay', 'az', 'pitch', 'roll',
+    'gx', 'gy', 'gz',
+    'latitude', 'longitude', 'gps_altitude', 'gps_time',
+    'pressure', 'temperature', 'agl_altitude', 'velocity',
+    'pyro1_state', 'pyro2_state',
+    'battery_voltage', 'wifi_rssi',
+    'kalman_altitude', 'kalman_vertical_velocity',
+    'communication_mode', 'raw_data'
+]
+
+# === APP STARTUP MANAGEMENT ===
+app_processes = []  # Store spawned processes
+
+def kill_processes_on_port(port):
+    """Kill any processes running on the specified port using Windows netstat and taskkill"""
+    try:
+        # Use netstat to find processes using the port
+        netstat_cmd = f"netstat -ano | findstr :{port}"
+        result = subprocess.run(netstat_cmd, shell=True, capture_output=True, text=True)
+        
+        if result.returncode == 0 and result.stdout:
+            lines = result.stdout.strip().split('\n')
+            pids = set()
+            
+            for line in lines:
+                parts = line.split()
+                if len(parts) >= 5 and 'LISTENING' in line:
+                    pid = parts[-1]
+                    if pid.isdigit():
+                        pids.add(pid)
+            
+            for pid in pids:
+                try:
+                    logger.info(f"🔪 Killing process {pid} on port {port}")
+                    subprocess.run(f"taskkill /PID {pid} /F", shell=True, capture_output=True)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not kill process {pid}: {e}")
+                    
+    except Exception as e:
+        logger.warning(f"⚠️ Error killing processes on port {port}: {e}")
+
+def start_app_services():
+    """Start all app services"""
+    global app_processes
+    
+    # Kill any existing processes on port 8080
+    kill_processes_on_port(PORT_8080)
+    time.sleep(1)
+    
+    logger.info("🚀 Starting application services...")
+    
+    try:
+        # Start npm dev server
+        logger.info("📦 Starting npm dev server...")
+        npm_process = subprocess.Popen(
+            ["cmd", "/c", "npm", "run", "dev"],
+            shell=True,
+            cwd=os.getcwd(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+        app_processes.append(("npm", npm_process))
+        logger.info("✅ npm dev server started")
+        
+        # Start tileserver-gl
+        logger.info("🗺️ Starting tileserver...")
+        tileserver_process = subprocess.Popen(
+            ["cmd", "/c", "tileserver-gl", "--file", "osm-2020-02-10-v3.11_africa_kenya.mbtiles"],
+            shell=True,
+            cwd=os.getcwd(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+        app_processes.append(("tileserver", tileserver_process))
+        logger.info("✅ Tileserver started")
+        
+        # Start mosquitto
+        logger.info("🦟 Starting mosquitto...")
+        mosquitto_process = subprocess.Popen(
+            ["cmd", "/c", "mosquitto", "-c", "mosquitto.conf", "-v"],
+            shell=True,
+            cwd=os.getcwd(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+        app_processes.append(("mosquitto", mosquitto_process))
+        logger.info("✅ Mosquitto started")
+        
+        # Give services time to start
+        time.sleep(3)
+        
+        logger.info("🎉 All application services started successfully!")
+        
+        # Wait a bit more for Mosquitto to fully initialize
+        logger.info("⏳ Waiting for Mosquitto to initialize...")
+        time.sleep(2)
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to start app services: {e}")
+
+def cleanup_processes():
+    """Clean up spawned processes"""
+    global app_processes
+    logger.info("🧹 Cleaning up processes...")
+    
+    for name, process in app_processes:
+        try:
+            if process.poll() is None:  # Process is still running
+                logger.info(f"🔪 Terminating {name} process...")
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"⚠️ Force killing {name} process...")
+                    process.kill()
+        except Exception as e:
+            logger.error(f"❌ Error cleaning up {name}: {e}")
+    
+    app_processes.clear()
+
+# Register cleanup function
+atexit.register(cleanup_processes)
+
+# === CSV LOGGING ===
+csv_writer = None
+csv_file_handle = None
+csv_lock = threading.Lock()
+
+def setup_csv_logging():
+    """Setup CSV logging with timestamped filename"""
+    global csv_writer, csv_file_handle
+    
+    if not CSV_LOGGING_ENABLED:
+        return
+    
+    try:
+        # Create logs directory if it doesn't exist
+        log_dir = Path(CSV_LOG_DIR)
+        log_dir.mkdir(exist_ok=True)
+        
+        # Create timestamped filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        csv_filename = log_dir / f"telemetry_{timestamp}.csv"
+        
+        # Open CSV file for writing
+        csv_file_handle = open(csv_filename, 'w', newline='', encoding='utf-8')
+        csv_writer = csv.DictWriter(csv_file_handle, fieldnames=CSV_FIELDNAMES)
+        csv_writer.writeheader()
+        csv_file_handle.flush()
+        
+        logger.info(f"📄 CSV logging enabled: {csv_filename}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to setup CSV logging: {e}")
+        csv_writer = None
+
+def log_to_csv(data_dict):
+    """Log telemetry data to CSV file"""
+    global csv_writer, csv_file_handle
+    
+    if not CSV_LOGGING_ENABLED or not csv_writer:
+        return
+    
+    try:
+        with csv_lock:
+            # Create timestamp
+            now = datetime.now()
+            timestamp = now.timestamp()
+            iso_timestamp = now.isoformat()
+            
+            # Extract Kalman data from multiple possible locations (ESP32 nested format)
+            kalman_alt = (
+                data_dict.get('kalman_data', {}).get('altitude', '') or
+                data_dict.get('kalman_altitude', '') or
+                data_dict.get('alt_data', {}).get('kalman_altitude', '')
+            )
+            kalman_vel = (
+                data_dict.get('kalman_data', {}).get('vertical_velocity', '') or
+                data_dict.get('kalman_vertical_velocity', '') or
+                data_dict.get('alt_data', {}).get('kalman_vertical_velocity', '')
+            )
+            
+            # Prepare CSV row with safe value extraction
+            csv_row = {
+                'timestamp': timestamp,
+                'iso_timestamp': iso_timestamp,
+                'record_number': data_dict.get('record_number', ''),
+                'operation_mode': data_dict.get('operation_mode', ''),
+                'state': data_dict.get('state', ''),
+                'ax': data_dict.get('acc_data', {}).get('ax', ''),
+                'ay': data_dict.get('acc_data', {}).get('ay', ''),
+                'az': data_dict.get('acc_data', {}).get('az', ''),
+                'pitch': data_dict.get('acc_data', {}).get('pitch', ''),
+                'roll': data_dict.get('acc_data', {}).get('roll', ''),
+                'gx': data_dict.get('gyro_data', {}).get('gx', ''),
+                'gy': data_dict.get('gyro_data', {}).get('gy', ''),
+                'gz': data_dict.get('gyro_data', {}).get('gz', ''),
+                'latitude': data_dict.get('gps_data', {}).get('latitude', ''),
+                'longitude': data_dict.get('gps_data', {}).get('longitude', ''),
+                'gps_altitude': data_dict.get('gps_data', {}).get('gps_altitude', ''),
+                'gps_time': data_dict.get('gps_data', {}).get('time', ''),
+                'pressure': data_dict.get('alt_data', {}).get('pressure', ''),
+                'temperature': data_dict.get('alt_data', {}).get('temperature', ''),
+                'agl_altitude': data_dict.get('alt_data', {}).get('AGL', ''),
+                'velocity': data_dict.get('alt_data', {}).get('velocity', ''),
+                'pyro1_state': data_dict.get('chute_state', {}).get('pyro1_state', ''),
+                'pyro2_state': data_dict.get('chute_state', {}).get('pyro2_state', ''),
+                'battery_voltage': data_dict.get('battery_voltage', ''),
+                'wifi_rssi': data_dict.get('wifi_rssi', ''),
+                'kalman_altitude': kalman_alt,
+                'kalman_vertical_velocity': kalman_vel,
+                'communication_mode': data_dict.get('communication_mode', ''),
+                'raw_data': json.dumps(data_dict) if isinstance(data_dict, dict) else str(data_dict)
+            }
+            
+            csv_writer.writerow(csv_row)
+            csv_file_handle.flush()  # Ensure data is written immediately
+            
+    except Exception as e:
+        logger.error(f"❌ Failed to log to CSV: {e}")
+
+def close_csv_logging():
+    """Close CSV logging file"""
+    global csv_file_handle
+    
+    try:
+        if csv_file_handle:
+            csv_file_handle.close()
+            logger.info("📄 CSV logging closed")
+    except Exception as e:
+        logger.error(f"❌ Error closing CSV: {e}")
+
+# Register CSV cleanup
+atexit.register(close_csv_logging)
 
 # === SERIAL CONNECTION ===
 serial_conn = None
 serial_lock = threading.Lock()
+usb_reconnect_thread = None
+usb_monitoring = True
 
 def find_esp32_port():
-    """Find ESP32 port with enhanced detection"""
+    """Find ESP32 port with enhanced detection and availability check"""
     ports = list_ports.comports()
     esp32_ids = ['ESP32', 'CP210', 'CH340', 'CH341', 'Silicon Labs']
     
@@ -36,19 +290,29 @@ def find_esp32_port():
         desc = port.description or ""
         hwid = port.hwid or ""
         if any(id in desc for id in esp32_ids) or '10C4:EA60' in hwid:
-            logger.info(f"Found ESP32 at {port.device}")
-            return port.device
+            # Test if port is actually available (not in use)
+            try:
+                test_conn = serial.Serial(port.device, SERIAL_BAUD, timeout=0.5)
+                test_conn.close()
+                logger.debug(f"Found available ESP32 at {port.device}")
+                return port.device
+            except Exception as e:
+                logger.debug(f"ESP32 found at {port.device} but not available: {e}")
+                continue
     return None
 
 def open_serial():
     global serial_conn
     with serial_lock:
         if serial_conn and serial_conn.is_open:
-            serial_conn.close()
+            try:
+                serial_conn.close()
+            except:
+                pass
         
         port = find_esp32_port()
         if not port:
-            logger.error("No ESP32 port found")
+            logger.debug("No ESP32 port found")
             return False
             
         try:
@@ -63,18 +327,88 @@ def open_serial():
             )
             time.sleep(2)  # Wait for connection
             serial_conn.reset_input_buffer()
-            logger.info(f"Serial connected to {port}")
+            logger.info(f"✅ Serial connected to {port}")
             return True
         except Exception as e:
-            logger.error(f"Serial connection failed: {e}")
+            logger.warning(f"❌ Serial connection failed to {port}: {e}")
             return False
 
 def close_serial():
     global serial_conn
     with serial_lock:
         if serial_conn and serial_conn.is_open:
-            serial_conn.close()
-            logger.info("Serial port closed")
+            try:
+                serial_conn.close()
+                logger.info("📴 Serial port closed")
+            except:
+                pass
+
+def monitor_usb_connection():
+    """Monitor USB connection and auto-reconnect"""
+    global serial_conn, usb_monitoring
+    
+    logger.info("🔍 Starting USB connection monitor...")
+    consecutive_failures = 0
+    max_consecutive_failures = 3
+    
+    while usb_monitoring:
+        try:
+            # Check if current connection is still valid
+            if serial_conn and serial_conn.is_open:
+                try:
+                    # Test the connection by checking if port still exists
+                    current_port = serial_conn.port
+                    available_ports = [port.device for port in list_ports.comports()]
+                    
+                    if current_port not in available_ports:
+                        logger.warning("⚠️ USB device disconnected, closing serial connection")
+                        close_serial()
+                        consecutive_failures = 0  # Reset failure counter
+                    else:
+                        # Connection is good, reset failure counter
+                        consecutive_failures = 0
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Serial connection lost: {e}")
+                    close_serial()
+                    consecutive_failures = 0  # Reset failure counter
+            else:
+                # Try to reconnect if no connection
+                esp32_port = find_esp32_port()
+                if esp32_port:
+                    logger.info(f"🔌 ESP32 detected at {esp32_port}, attempting reconnection...")
+                    if open_serial():
+                        logger.info("✅ USB reconnection successful!")
+                        consecutive_failures = 0  # Reset failure counter
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures <= max_consecutive_failures:
+                            logger.debug(f"❌ Reconnection failed (attempt {consecutive_failures}/{max_consecutive_failures}), will retry...")
+                        else:
+                            logger.debug(f"❌ Max reconnection attempts reached, waiting longer...")
+                            time.sleep(USB_RECONNECT_INTERVAL * 3)  # Wait longer after repeated failures
+                            consecutive_failures = 0  # Reset after longer wait
+                else:
+                    # No ESP32 detected, reset failure counter
+                    consecutive_failures = 0
+                        
+            time.sleep(USB_RECONNECT_INTERVAL)
+            
+        except Exception as e:
+            logger.error(f"❌ USB monitor error: {e}")
+            time.sleep(USB_RECONNECT_INTERVAL)
+
+def start_usb_monitor():
+    """Start USB monitoring thread"""
+    global usb_reconnect_thread
+    if USB_MONITOR_ENABLED and (usb_reconnect_thread is None or not usb_reconnect_thread.is_alive()):
+        usb_reconnect_thread = threading.Thread(target=monitor_usb_connection, daemon=True)
+        usb_reconnect_thread.start()
+
+def stop_usb_monitor():
+    """Stop USB monitoring"""
+    global usb_monitoring
+    usb_monitoring = False
 
 # === LOGGING ===
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -113,8 +447,37 @@ class ConnectionStatus:
 connection_status = ConnectionStatus()
 
 # === MQTT CLIENT ===
-client = mqtt.Client(protocol=mqtt.MQTTv311)  # Using protocol version 3.1.1
+client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION1, protocol=mqtt.MQTTv311)
 mqtt_connected = False
+
+def setup_mqtt_connection():
+    """Setup MQTT connection with retry logic"""
+    global client, mqtt_connected
+    
+    max_retries = 10
+    retry_delay = 2
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔌 MQTT connection attempt {attempt + 1}/{max_retries}")
+            client.connect(MQTT_BROKER, MQTT_PORT, 60)
+            client.loop_start()
+            
+            # Wait a moment to see if connection succeeds
+            time.sleep(1)
+            if mqtt_connected:
+                logger.info("✅ MQTT connected successfully")
+                return True
+                
+        except Exception as e:
+            logger.warning(f"⚠️ MQTT connection attempt {attempt + 1} failed: {e}")
+            
+        if attempt < max_retries - 1:
+            logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+            time.sleep(retry_delay)
+    
+    logger.error("❌ Failed to connect to MQTT after all attempts")
+    return False
 
 def on_mqtt_connect(client, userdata, flags, rc):
     global mqtt_connected
@@ -149,7 +512,7 @@ def on_mqtt_message(client, userdata, msg):
                 # Check if it's CSV format (like your example)
                 if "," in payload and not payload.startswith("{"):
                     fields = payload.split(",")
-                    if len(fields) >= 23:  # Match your CSV format
+                    if len(fields) >= 25:  # Updated to match new 25-field CSV format
                         data = {
                             "record_number": int(fields[0]),
                             "operation_mode": int(fields[1]),
@@ -184,21 +547,56 @@ def on_mqtt_message(client, userdata, msg):
                             },
                             "battery_voltage": float(fields[21]),
                             "wifi_rssi": int(fields[22]),
+                            "kalman_data": {
+                                "altitude": float(fields[23]),
+                                "vertical_velocity": float(fields[24])
+                            },
                             "communication_mode": "MQTT",
                             "timestamp": time.time(),
                             "raw": payload  # Include raw data for reference
                         }
-                        client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                        connection_status.update_mqtt()
-                        logger.debug(f"📡 Forwarded MQTT telemetry (CSV format)")
+                        if mqtt_connected:
+                            client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                            connection_status.update_mqtt()
+                            logger.debug(f"📡 Forwarded MQTT telemetry (CSV format)")
+                            
+                            # Log CSV data to file
+                            log_to_csv(data)
+                        else:
+                            logger.debug("📡 MQTT not connected, skipping telemetry forward")
+                            # Still log to CSV even if MQTT is down
+                            log_to_csv(data)
+                    else:
+                        logger.warning(f"⚠️ Invalid CSV format (got {len(fields)} fields, expected 25): {payload}")
                 else:
                     # Try to parse as JSON if not CSV
                     try:
                         data = json.loads(payload)
+                        # Handle both nested kalman_data and flat kalman fields from ESP32
+                        if 'kalman_altitude' in data and 'kalman_vertical_velocity' in data:
+                            data['kalman_data'] = {
+                                'altitude': data.get('kalman_altitude', 0),
+                                'vertical_velocity': data.get('kalman_vertical_velocity', 0)
+                            }
+                        elif 'kalman_data' not in data:
+                            # Add empty kalman_data if not present
+                            data['kalman_data'] = {
+                                'altitude': 0,
+                                'vertical_velocity': 0
+                            }
+                        
                         data["communication_mode"] = "MQTT"
-                        client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                        connection_status.update_mqtt()
-                        logger.debug(f"📡 Forwarded MQTT telemetry (JSON format)")
+                        if mqtt_connected:
+                            client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                            connection_status.update_mqtt()
+                            logger.debug(f"📡 Forwarded MQTT telemetry (JSON format)")
+                            
+                            # Log JSON data to file
+                            log_to_csv(data)
+                        else:
+                            logger.debug("📡 MQTT not connected, skipping telemetry forward")
+                            # Still log to CSV even if MQTT is down
+                            log_to_csv(data)
                     except json.JSONDecodeError:
                         logger.warning(f"⚠️ Unrecognized MQTT payload format: {payload}")
             except Exception as e:
@@ -211,12 +609,7 @@ client.on_connect = on_mqtt_connect
 client.on_disconnect = on_mqtt_disconnect
 client.on_message = on_mqtt_message
 
-try:
-    client.connect(MQTT_BROKER, MQTT_PORT, 60)
-    client.loop_start()
-    logger.info("🔌 MQTT setup initiated...")
-except Exception as e:
-    logger.error(f"❌ MQTT setup failed: {e}")
+# Don't connect immediately - will connect after Mosquitto starts
 
 # === DATA HANDLING ===
 def process_serial_data(line):
@@ -230,11 +623,16 @@ def process_serial_data(line):
         if line.startswith(("LOG:", "STATUS:")):
             logger.debug(f"📝 [SERIAL] {line}")
             return
+        
+        # Skip incomplete JSON lines (common with serial communication)
+        if line.startswith('{') and not line.endswith('}'):
+            logger.debug(f"⚠️ Incomplete JSON line, skipping: {line[:50]}...")
+            return
             
         # Check if it's CSV format (like your MQTT data)
         if "," in line and not line.startswith("{"):
             fields = line.split(",")
-            if len(fields) >= 23:  # Match your CSV format
+            if len(fields) >= 25:  # Updated to match new 25-field CSV format
                 data = {
                     "record_number": int(fields[0]),
                     "operation_mode": int(fields[1]),
@@ -269,23 +667,68 @@ def process_serial_data(line):
                     },
                     "battery_voltage": float(fields[21]),
                     "wifi_rssi": int(fields[22]),
+                    "kalman_data": {
+                        "altitude": float(fields[23]),
+                        "vertical_velocity": float(fields[24])
+                    },
                     "communication_mode": "BEACON",
                     "timestamp": time.time(),
                     "raw": line  # Include raw data for reference
                 }
-                client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                connection_status.update_serial()
-                logger.debug(f"📡 Forwarded beacon telemetry")
+                if mqtt_connected:
+                    client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                    connection_status.update_serial()
+                    logger.debug(f"📡 Forwarded beacon telemetry")
+                    
+                    # Log CSV data to file
+                    log_to_csv(data)
+                else:
+                    logger.debug("📡 MQTT not connected, skipping telemetry forward")
+                    # Still log to CSV even if MQTT is down
+                    log_to_csv(data)
             else:
                 logger.warning(f"⚠️ Invalid CSV format: {line}")
         else:
             # Try to parse as JSON if not CSV
             try:
                 data = json.loads(line)
-                data["communication_mode"] = "BEACON"
-                client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                connection_status.update_serial()
-                logger.debug(f"📡 Forwarded beacon telemetry (JSON format)")
+                
+                # Normalize Kalman data from ESP32's nested structure
+                # ESP32 sends kalman data nested within alt_data
+                kalman_alt = (
+                    data.get('alt_data', {}).get('kalman_altitude') or
+                    data.get('kalman_data', {}).get('altitude') or
+                    data.get('kalman_altitude', 0)
+                )
+                kalman_vel = (
+                    data.get('alt_data', {}).get('kalman_vertical_velocity') or
+                    data.get('kalman_data', {}).get('vertical_velocity') or
+                    data.get('kalman_vertical_velocity', 0)
+                )
+                
+                # Ensure normalized kalman_data structure for app consistency
+                data['kalman_data'] = {
+                    'altitude': kalman_alt,
+                    'vertical_velocity': kalman_vel
+                }
+                
+                # Also add flat fields for backward compatibility
+                data['kalman_altitude'] = kalman_alt
+                data['kalman_vertical_velocity'] = kalman_vel
+                
+                # Normalize communication mode
+                data["communication_mode"] = data.get("communication_mode", "BEACON").upper()
+                if mqtt_connected:
+                    client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
+                    connection_status.update_serial()
+                    logger.info(f"📡 Forwarded beacon JSON telemetry - Record #{data.get('record_number', 'N/A')} - Kalman Alt: {kalman_alt}, Vel: {kalman_vel}")
+                    
+                    # Log to CSV
+                    log_to_csv(data)
+                else:
+                    logger.debug("📡 MQTT not connected, skipping telemetry forward")
+                    # Still log to CSV even if MQTT is down
+                    log_to_csv(data)
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ Unrecognized serial payload format: {line}")
                 
@@ -293,13 +736,18 @@ def process_serial_data(line):
         logger.error(f"❌ Serial data processing error: {e}")
 
 def send_command(cmd, source):
-    """Send command to flight computer"""
+    """Send command to flight computer with improved error handling"""
     if not serial_conn or not serial_conn.is_open:
+        logger.debug("Serial not connected, attempting to connect...")
         if not open_serial():
+            logger.warning("⚠️ Cannot send command - no serial connection")
             return False
     
     try:
         with serial_lock:
+            if not serial_conn or not serial_conn.is_open:
+                return False
+                
             serial_conn.reset_input_buffer()
             serial_conn.reset_output_buffer()
             serial_conn.write((cmd + "\n").encode())
@@ -322,22 +770,26 @@ def send_command(cmd, source):
             
     except Exception as e:
         logger.error(f"❌ Command failed: {e}")
-        close_serial()
+        # Don't close serial connection here, let the monitor handle it
         return False
 
 # === MAIN LOOP ===
 def main_loop():
-    """Main processing loop"""
+    """Main processing loop with improved error handling"""
     last_status = 0
     
     while True:
         try:
-            # Check serial for data
+            # Check serial for data (with improved error handling)
             if serial_conn and serial_conn.is_open:
-                while serial_conn.in_waiting:
-                    line = serial_conn.readline().decode(errors='replace').strip()
-                    if line:
-                        process_serial_data(line)
+                try:
+                    while serial_conn.in_waiting:
+                        line = serial_conn.readline().decode(errors='replace').strip()
+                        if line:
+                            process_serial_data(line)
+                except Exception as e:
+                    logger.warning(f"⚠️ Serial read error: {e}")
+                    # Don't close connection here, let monitor handle it
             
             # Send status periodically
             if time.time() - last_status > HEARTBEAT_INTERVAL:
@@ -349,12 +801,14 @@ def main_loop():
                     "last_serial": connection_status.last_serial,
                     "last_mqtt": connection_status.last_mqtt
                 }
-                client.publish(MQTT_STATUS_TOPIC, json.dumps(status))
+                if mqtt_connected:
+                    client.publish(MQTT_STATUS_TOPIC, json.dumps(status))
                 last_status = time.time()
             
-            time.sleep(0.1)
+            time.sleep(0.05)  # Reduced sleep for better responsiveness
             
         except KeyboardInterrupt:
+            logger.info("🛑 Keyboard interrupt received")
             break
         except Exception as e:
             logger.error(f"❌ Main loop error: {e}")
@@ -363,13 +817,37 @@ def main_loop():
 def command_interface():
     """Interactive command interface"""
     print("\nN4 Command Interface (type 'help' for commands)")
+    print("App services starting in background...")
     while True:
         try:
             cmd = input("n4> ").strip().lower()
             if cmd == "help":
-                print("Commands: status, mqtt, beacon, dual, arm, disarm, reset, quit")
+                print("Commands: status, mqtt, beacon, dual, arm, disarm, reset, restart_app, toggle_usb, toggle_csv, quit")
             elif cmd == "quit":
                 break
+            elif cmd == "restart_app":
+                logger.info("🔄 Restarting application services...")
+                cleanup_processes()
+                time.sleep(2)
+                start_app_services()
+            elif cmd == "toggle_usb":
+                global USB_MONITOR_ENABLED
+                USB_MONITOR_ENABLED = not USB_MONITOR_ENABLED
+                if USB_MONITOR_ENABLED:
+                    print("✅ USB monitoring enabled")
+                    start_usb_monitor()
+                else:
+                    print("❌ USB monitoring disabled")
+                    stop_usb_monitor()
+            elif cmd == "toggle_csv":
+                global CSV_LOGGING_ENABLED
+                CSV_LOGGING_ENABLED = not CSV_LOGGING_ENABLED
+                if CSV_LOGGING_ENABLED:
+                    print("✅ CSV logging enabled")
+                    setup_csv_logging()
+                else:
+                    print("❌ CSV logging disabled")
+                    close_csv_logging()
             elif cmd in ["status", "mqtt", "beacon", "dual", "arm", "disarm", "reset"]:
                 send_command(cmd.upper(), "CONSOLE")
             else:
@@ -382,14 +860,35 @@ def command_interface():
 if __name__ == '__main__':
     logger.info("🚀 Starting N4 Base Station Server")
     
-    # Start main loop in background
-    loop_thread = threading.Thread(target=main_loop, daemon=True)
-    loop_thread.start()
-    
-    # Run command interface
     try:
+        # Start application services first
+        start_app_services()
+        
+        # Setup CSV logging
+        setup_csv_logging()
+        
+        # Setup MQTT connection after services are started
+        setup_mqtt_connection()
+        
+        # Start USB monitoring
+        start_usb_monitor()
+        
+        # Attempt initial serial connection
+        open_serial()
+        
+        # Start main loop in background
+        loop_thread = threading.Thread(target=main_loop, daemon=True)
+        loop_thread.start()
+        
+        # Run command interface
         command_interface()
+        
+    except KeyboardInterrupt:
+        logger.info("🛑 Shutting down...")
     finally:
+        # Cleanup
+        stop_usb_monitor()
         close_serial()
         client.disconnect()
+        cleanup_processes()
         logger.info("👋 Shutdown complete")

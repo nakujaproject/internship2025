@@ -29,6 +29,7 @@ function App() {
     // Add new telemetry fields
     acceleration: { ax: 0, ay: 0, az: 0, pitch: 0, roll: 0 },
     gyro: { gx: 0, gy: 0, gz: 0 },
+    kalman: { altitude: 0, verticalVelocity: 0 }, // Added Kalman filter data
     communicationMode: "MQTT", // Track if using MQTT or Beacon mode - default to MQTT
     packetsReceived: 0, // Track total packets from base station
   });
@@ -401,6 +402,14 @@ function App() {
           gy: receivedData.gyro_data?.gy || 0,
           gz: receivedData.gyro_data?.gz || 0,
         },
+        kalman: {
+          altitude: receivedData.kalman_data?.altitude || 
+                   receivedData.kalman_altitude || 
+                   receivedData.alt_data?.kalman_altitude || 0,
+          verticalVelocity: receivedData.kalman_data?.vertical_velocity || 
+                           receivedData.kalman_vertical_velocity || 
+                           receivedData.alt_data?.kalman_vertical_velocity || 0,
+        },
         communicationMode: commMode, // Always 'Beacon' or 'MQTT'
         packetsReceived: receivedData.packets_received || 0,
       }));
@@ -414,13 +423,13 @@ function App() {
       }
 
     } catch (jsonError) {
-      // If JSON parsing fails, try parsing CSV with your 23-field format
+      // If JSON parsing fails, try parsing CSV with your 25-field format
       try {
         const values = payload.trim().split(',');
         
-        // Ensure we have the expected number of fields (23 fields total)
-        if (values.length < 23) {
-          throw new Error(`Expected 23 CSV fields, got ${values.length}`);
+        // Ensure we have the expected number of fields (25 fields total)
+        if (values.length < 25) {
+          throw new Error(`Expected 25 CSV fields, got ${values.length}`);
         }
 
         // Convert string values to numbers where appropriate
@@ -467,6 +476,10 @@ function App() {
           },
           battery_voltage: numericValues[21],
           wifi_rssi: numericValues[22],
+          kalman_data: {
+            altitude: numericValues[23],
+            vertical_velocity: numericValues[24],
+          },
           communication_mode: "MQTT", // Default to MQTT for CSV data
         };
 
@@ -526,6 +539,10 @@ function App() {
             gy: receivedData.gyro_data.gy,
             gz: receivedData.gyro_data.gz,
           },
+          kalman: {
+            altitude: receivedData.kalman_data.altitude,
+            verticalVelocity: receivedData.kalman_data.vertical_velocity,
+          },
           communicationMode: commMode, // Always 'Beacon' or 'MQTT'
         }));
 
@@ -555,19 +572,39 @@ function App() {
       return;
     }
 
-    // --- Altitude (GPS vs Barometric) ---
+    // --- Altitude (GPS vs Barometric vs Kalman) ---
     const alt0 = altitudeChartRef.current.data.datasets[0].data;
     const alt1 = altitudeChartRef.current.data.datasets[1].data;
+    const alt2 = altitudeChartRef.current.data.datasets[2].data;
+    
+    // Extract Kalman altitude from multiple possible locations
+    const kalmanAlt = received_data.kalman_data?.altitude || 
+                     received_data.kalman_altitude || 
+                     received_data.alt_data?.kalman_altitude || 0;
+    
     alt0.push({ x: time, y: received_data.gps_data?.gps_altitude || 0 });
     alt1.push({ x: time, y: received_data.alt_data?.AGL || 0 });
+    alt2.push({ x: time, y: kalmanAlt });
+    
     if (alt0.length > MAX_POINTS) alt0.shift();
     if (alt1.length > MAX_POINTS) alt1.shift();
+    if (alt2.length > MAX_POINTS) alt2.shift();
     altitudeChartRef.current.update("quiet");
 
-    // --- Velocity ---
+    // --- Velocity (Barometric vs Kalman) ---
     const vel0 = velocityChartRef.current.data.datasets[0].data;
+    const vel1 = velocityChartRef.current.data.datasets[1].data;
+    
+    // Extract Kalman vertical velocity from multiple possible locations
+    const kalmanVel = received_data.kalman_data?.vertical_velocity || 
+                     received_data.kalman_vertical_velocity || 
+                     received_data.alt_data?.kalman_vertical_velocity || 0;
+    
     vel0.push({ x: time, y: received_data.alt_data?.velocity || 0 });
+    vel1.push({ x: time, y: kalmanVel });
+    
     if (vel0.length > MAX_POINTS) vel0.shift();
+    if (vel1.length > MAX_POINTS) vel1.shift();
     velocityChartRef.current.update("quiet");
 
     // --- Acceleration ---
