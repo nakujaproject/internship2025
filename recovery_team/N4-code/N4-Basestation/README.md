@@ -215,6 +215,28 @@ npm install --force
 
 ---
 
+## 8. Range Test 2 – Quick Analysis
+
+Generate RSSI decay and GPS path plots from the latest telemetry CSV:
+
+```powershell
+cd E:\nakuu\internship2025\recovery_team\N4-code\N4-Basestation
+python plot_range_test2.py
+```
+
+Artifacts (saved in repo root):
+
+- Range_Test_2_RSSI.png
+- Range_Test_2_GPS.png
+
+Preview:
+
+![Range Test 2 RSSI](./Range_Test_2_RSSI.png)
+
+![Range Test 2 GPS](./Range_Test_2_GPS.png)
+
+---
+
 # MQTT Configuration
 
 ## Overview

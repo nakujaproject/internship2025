@@ -14,6 +14,14 @@ import atexit
 import csv
 from pathlib import Path
 
+# === OPTIONAL GUI (tkinter) ===
+try:
+    import tkinter as tk
+    from tkinter import ttk
+    TK_AVAILABLE = True
+except Exception:
+    TK_AVAILABLE = False
+
 # === CONFIG ===
 SERIAL_BAUD = 115200
 MQTT_BROKER = "localhost"  # Update with your broker IP
@@ -285,19 +293,35 @@ def find_esp32_port():
     """Find ESP32 port with enhanced detection and availability check"""
     ports = list_ports.comports()
     esp32_ids = ['ESP32', 'CP210', 'CH340', 'CH341', 'Silicon Labs']
+    bt_ids = ['HC-05', 'HC-06', 'Bluetooth', 'BTHENUM', 'Standard Serial over Bluetooth']
     
+    # First pass: USB/TTL adapters or native ESP32
     for port in ports:
-        desc = port.description or ""
+        desc = (port.description or "") + " " + (port.manufacturer or "")
         hwid = port.hwid or ""
         if any(id in desc for id in esp32_ids) or '10C4:EA60' in hwid:
-            # Test if port is actually available (not in use)
             try:
                 test_conn = serial.Serial(port.device, SERIAL_BAUD, timeout=0.5)
                 test_conn.close()
-                logger.debug(f"Found available ESP32 at {port.device}")
+                logger.debug(f"Found available ESP32/USB at {port.device}")
                 return port.device
             except Exception as e:
-                logger.debug(f"ESP32 found at {port.device} but not available: {e}")
+                logger.debug(f"ESP32/USB found at {port.device} but not available: {e}")
+                continue
+
+    # Second pass: Bluetooth SPP (HC-05/HC-06)
+    for port in ports:
+        desc = (port.description or "") + " " + (port.manufacturer or "")
+        hwid = port.hwid or ""
+        if any(id in desc for id in bt_ids) or 'BTHENUM' in hwid:
+            try:
+                # HC-05 default is often 9600; we'll just test if port opens at 9600
+                test_conn = serial.Serial(port.device, 9600, timeout=0.5)
+                test_conn.close()
+                logger.debug(f"Found available Bluetooth (HC-xx) at {port.device}")
+                return port.device
+            except Exception as e:
+                logger.debug(f"Bluetooth port {port.device} not available: {e}")
                 continue
     return None
 
@@ -316,19 +340,38 @@ def open_serial():
             return False
             
         try:
-            serial_conn = serial.Serial(
-                port=port,
-                baudrate=SERIAL_BAUD,
-                timeout=1,
-                write_timeout=1,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE
-            )
-            time.sleep(2)  # Wait for connection
-            serial_conn.reset_input_buffer()
-            logger.info(f"✅ Serial connected to {port}")
-            return True
+            # Try configured baud first
+            try_bauds = [SERIAL_BAUD]
+            # Add a common fallback for Bluetooth HC-05/06
+            if 9600 not in try_bauds:
+                try_bauds.append(9600)
+
+            last_err = None
+            for baud in try_bauds:
+                try:
+                    serial_conn = serial.Serial(
+                        port=port,
+                        baudrate=baud,
+                        timeout=1,
+                        write_timeout=1,
+                        bytesize=serial.EIGHTBITS,
+                        parity=serial.PARITY_NONE,
+                        stopbits=serial.STOPBITS_ONE
+                    )
+                    time.sleep(2)  # Wait for connection
+                    serial_conn.reset_input_buffer()
+                    logger.info(f"✅ Serial connected to {port} @ {baud} bps")
+                    return True
+                except Exception as e:
+                    last_err = e
+                    # If first baud fails, try next
+                    try:
+                        if serial_conn:
+                            serial_conn.close()
+                    except Exception:
+                        pass
+            # If we reach here, all baud attempts failed
+            raise last_err if last_err else Exception("Unknown serial open error")
         except Exception as e:
             logger.warning(f"❌ Serial connection failed to {port}: {e}")
             return False
@@ -446,6 +489,32 @@ class ConnectionStatus:
 
 connection_status = ConnectionStatus()
 
+# === LATEST TELEMETRY CACHE FOR PRINTING & GUI ===
+last_telemetry = {}
+last_telemetry_lock = Lock()
+
+def update_last_telemetry(data: dict):
+    """Store the latest telemetry record (thread-safe) and print summary with RSSI, location, timestamp."""
+    global last_telemetry
+    with last_telemetry_lock:
+        last_telemetry = data.copy()
+        last_telemetry['received_at'] = time.time()
+    # Print concise summary focusing on requested fields (RSSI, location, timestamp)
+    try:
+        gps = data.get('gps_data', {})
+        alt_data = data.get('alt_data', {})
+        kalman = data.get('kalman_data', {})
+        rssi = data.get('wifi_rssi', data.get('rssi', ''))
+        lat = gps.get('latitude')
+        lon = gps.get('longitude')
+        gps_alt = gps.get('altitude') or gps.get('gps_altitude')
+        agl = alt_data.get('AGL')
+        kal_alt = kalman.get('altitude')
+        ts = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        logger.info(f"TELEM t={ts} RSSI={rssi} lat={lat} lon={lon} gps_alt={gps_alt} AGL={agl} kal_alt={kal_alt}")
+    except Exception as e:
+        logger.debug(f"Telemetry summary print failed: {e}")
+
 # === MQTT CLIENT ===
 client = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION1, protocol=mqtt.MQTTv311)
 mqtt_connected = False
@@ -555,17 +624,15 @@ def on_mqtt_message(client, userdata, msg):
                             "timestamp": time.time(),
                             "raw": payload  # Include raw data for reference
                         }
+                        update_last_telemetry(data)
                         if mqtt_connected:
                             client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
                             connection_status.update_mqtt()
                             logger.debug(f"📡 Forwarded MQTT telemetry (CSV format)")
-                            
-                            # Log CSV data to file
-                            log_to_csv(data)
                         else:
                             logger.debug("📡 MQTT not connected, skipping telemetry forward")
-                            # Still log to CSV even if MQTT is down
-                            log_to_csv(data)
+                        # Always log to CSV
+                        log_to_csv(data)
                     else:
                         logger.warning(f"⚠️ Invalid CSV format (got {len(fields)} fields, expected 25): {payload}")
                 else:
@@ -586,17 +653,14 @@ def on_mqtt_message(client, userdata, msg):
                             }
                         
                         data["communication_mode"] = "MQTT"
+                        update_last_telemetry(data)
                         if mqtt_connected:
                             client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
                             connection_status.update_mqtt()
                             logger.debug(f"📡 Forwarded MQTT telemetry (JSON format)")
-                            
-                            # Log JSON data to file
-                            log_to_csv(data)
                         else:
                             logger.debug("📡 MQTT not connected, skipping telemetry forward")
-                            # Still log to CSV even if MQTT is down
-                            log_to_csv(data)
+                        log_to_csv(data)
                     except json.JSONDecodeError:
                         logger.warning(f"⚠️ Unrecognized MQTT payload format: {payload}")
             except Exception as e:
@@ -675,17 +739,14 @@ def process_serial_data(line):
                     "timestamp": time.time(),
                     "raw": line  # Include raw data for reference
                 }
+                update_last_telemetry(data)
                 if mqtt_connected:
                     client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
                     connection_status.update_serial()
                     logger.debug(f"📡 Forwarded beacon telemetry")
-                    
-                    # Log CSV data to file
-                    log_to_csv(data)
                 else:
                     logger.debug("📡 MQTT not connected, skipping telemetry forward")
-                    # Still log to CSV even if MQTT is down
-                    log_to_csv(data)
+                log_to_csv(data)
             else:
                 logger.warning(f"⚠️ Invalid CSV format: {line}")
         else:
@@ -718,17 +779,14 @@ def process_serial_data(line):
                 
                 # Normalize communication mode
                 data["communication_mode"] = data.get("communication_mode", "BEACON").upper()
+                update_last_telemetry(data)
                 if mqtt_connected:
                     client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
                     connection_status.update_serial()
                     logger.info(f"📡 Forwarded beacon JSON telemetry - Record #{data.get('record_number', 'N/A')} - Kalman Alt: {kalman_alt}, Vel: {kalman_vel}")
-                    
-                    # Log to CSV
-                    log_to_csv(data)
                 else:
                     logger.debug("📡 MQTT not connected, skipping telemetry forward")
-                    # Still log to CSV even if MQTT is down
-                    log_to_csv(data)
+                log_to_csv(data)
             except json.JSONDecodeError:
                 logger.warning(f"⚠️ Unrecognized serial payload format: {line}")
                 
@@ -857,38 +915,139 @@ def command_interface():
         except Exception as e:
             print(f"Error: {e}")
 
+# === SIMPLE TKINTER GUI ===
+gui_thread = None
+
+def start_gui():
+    """Launch a simple Tkinter GUI showing RSSI, location, altitudes, and Arm/Disarm buttons."""
+    if not TK_AVAILABLE:
+        logger.warning("Tkinter not available; GUI disabled")
+        return
+
+    def gui_loop():
+        root = tk.Tk()
+        root.title("N4 Base Station")
+        root.geometry("420x260")
+
+        style = ttk.Style(root)
+        try:
+            style.theme_use('clam')
+        except Exception:
+            pass
+
+        # Labels
+        vars_map = {
+            'timestamp': tk.StringVar(value='-'),
+            'rssi': tk.StringVar(value='-'),
+            'lat': tk.StringVar(value='-'),
+            'lon': tk.StringVar(value='-'),
+            'gps_alt': tk.StringVar(value='-'),
+            'agl': tk.StringVar(value='-'),
+            'kal_alt': tk.StringVar(value='-'),
+            'vel': tk.StringVar(value='-'),
+            'mode': tk.StringVar(value='UNKNOWN'),
+        }
+
+        row = 0
+        for label, key in [
+            ("Mode", 'mode'),
+            ("Timestamp", 'timestamp'),
+            ("RSSI", 'rssi'),
+            ("Latitude", 'lat'),
+            ("Longitude", 'lon'),
+            ("GPS Alt", 'gps_alt'),
+            ("AGL", 'agl'),
+            ("Kalman Alt", 'kal_alt'),
+            ("Velocity", 'vel'),
+        ]:
+            ttk.Label(root, text=label+':').grid(column=0, row=row, sticky='e', padx=6, pady=2)
+            ttk.Label(root, textvariable=vars_map[key], width=20).grid(column=1, row=row, sticky='w')
+            row += 1
+
+        # Command buttons
+        btn_frame = ttk.Frame(root)
+        btn_frame.grid(column=0, row=row, columnspan=2, pady=10)
+
+        def send_cmd(c):
+            ok = send_command(c, "GUI")
+            if not ok:
+                logger.warning(f"GUI command {c} failed")
+
+        for c in ["ARM", "DISARM", "STATUS"]:
+            ttk.Button(btn_frame, text=c, command=lambda cc=c: send_cmd(cc)).pack(side='left', padx=5)
+
+        def refresh():
+            with last_telemetry_lock:
+                data = last_telemetry.copy()
+            if data:
+                gps = data.get('gps_data', {})
+                alt_data = data.get('alt_data', {})
+                kalman = data.get('kalman_data', {})
+                vars_map['timestamp'].set(datetime.utcnow().strftime('%H:%M:%S'))
+                vars_map['rssi'].set(data.get('wifi_rssi', data.get('rssi', '-')))
+                vars_map['lat'].set(f"{gps.get('latitude', '-'):.6f}" if isinstance(gps.get('latitude'), (int,float)) else '-')
+                vars_map['lon'].set(f"{gps.get('longitude', '-'):.6f}" if isinstance(gps.get('longitude'), (int,float)) else '-')
+                ga = gps.get('altitude') or gps.get('gps_altitude')
+                vars_map['gps_alt'].set(f"{ga:.1f}" if isinstance(ga, (int,float)) else '-')
+                agl = alt_data.get('AGL')
+                vars_map['agl'].set(f"{agl:.1f}" if isinstance(agl, (int,float)) else '-')
+                kal_alt = kalman.get('altitude')
+                vars_map['kal_alt'].set(f"{kal_alt:.1f}" if isinstance(kal_alt, (int,float)) else '-')
+                vel = alt_data.get('velocity') or kalman.get('vertical_velocity')
+                vars_map['vel'].set(f"{vel:.2f}" if isinstance(vel, (int,float)) else '-')
+                vars_map['mode'].set(connection_status.get_mode())
+            root.after(500, refresh)
+
+        refresh()
+        root.mainloop()
+
+    # Run GUI in its own thread so CLI still works
+    gt = threading.Thread(target=gui_loop, daemon=True)
+    gt.start()
+    return gt
+
 if __name__ == '__main__':
     logger.info("🚀 Starting N4 Base Station Server")
-    
     try:
-        # Start application services first
-        start_app_services()
-        
+        headless = os.environ.get('N4_HEADLESS') == '1'
+        if not headless:
+            # Start application services first
+            start_app_services()
+        else:
+            logger.info("HEADLESS mode: skipping external services start")
+
         # Setup CSV logging
         setup_csv_logging()
-        
-        # Setup MQTT connection after services are started
+
+        # Setup MQTT connection after services are started (unless headless and broker unavailable)
         setup_mqtt_connection()
-        
+
         # Start USB monitoring
         start_usb_monitor()
-        
+
         # Attempt initial serial connection
         open_serial()
-        
+
         # Start main loop in background
         loop_thread = threading.Thread(target=main_loop, daemon=True)
         loop_thread.start()
-        
-        # Run command interface
+
+        # Start GUI (non-blocking) unless headless
+        if not headless:
+            start_gui()
+
+        # Run command interface (blocking until quit)
         command_interface()
-        
+
     except KeyboardInterrupt:
         logger.info("🛑 Shutting down...")
     finally:
         # Cleanup
         stop_usb_monitor()
         close_serial()
-        client.disconnect()
+        try:
+            client.disconnect()
+        except Exception:
+            pass
         cleanup_processes()
         logger.info("👋 Shutdown complete")
