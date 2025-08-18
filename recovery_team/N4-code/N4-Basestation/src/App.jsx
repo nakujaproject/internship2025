@@ -33,6 +33,8 @@ function App() {
     communicationMode: "MQTT", // Track if using MQTT or Beacon mode - default to MQTT
     packetsReceived: 0, // Track total packets from base station
   });
+  // Track the path of locations
+  const [path, setPath] = useState([]);
 
   // Enhanced connection status tracking
   const [connectionStatus, setConnectionStatus] = useState({
@@ -51,6 +53,8 @@ function App() {
 
   const [error, setError] = useState(null);
   const [armingLogs, setArmingLogs] = useState([]);
+  const audioCtxRef = useRef(null);
+  const [beepEnabled, setBeepEnabled] = useState(false);
 
   const altitudeChartRef = useRef(null);
   const velocityChartRef = useRef(null);
@@ -118,6 +122,62 @@ function App() {
       setError("Failed to send arming command");
     }
   };
+
+  // Enable sound on first interaction (required by browsers)
+  useEffect(() => {
+    const enableAudio = () => {
+      try {
+        if (!audioCtxRef.current) {
+          audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        setBeepEnabled(true);
+      } catch {}
+      window.removeEventListener("click", enableAudio);
+    };
+    window.addEventListener("click", enableAudio);
+    return () => window.removeEventListener("click", enableAudio);
+  }, []);
+
+  // Two-tone warning when unarmed ("mo"-like)
+  useEffect(() => {
+    if (!beepEnabled) return;
+    const makeBeep = () => {
+      const ctx = audioCtxRef.current;
+      if (!ctx) return;
+      // First tone
+      const o1 = ctx.createOscillator();
+      const g1 = ctx.createGain();
+      o1.type = "sine";
+      o1.frequency.setValueAtTime(740, ctx.currentTime); // F#5
+      g1.gain.setValueAtTime(0.0001, ctx.currentTime);
+      o1.connect(g1);
+      g1.connect(ctx.destination);
+      const now = ctx.currentTime;
+      g1.gain.exponentialRampToValueAtTime(0.25, now + 0.03);
+      g1.gain.exponentialRampToValueAtTime(0.0001, now + 0.20);
+      o1.start();
+      o1.stop(now + 0.22);
+      // Second tone slightly higher
+      const o2 = ctx.createOscillator();
+      const g2 = ctx.createGain();
+      o2.type = "sine";
+      o2.frequency.setValueAtTime(880, now + 0.24); // A5
+      g2.gain.setValueAtTime(0.0001, now + 0.24);
+      o2.connect(g2);
+      g2.connect(ctx.destination);
+      g2.gain.exponentialRampToValueAtTime(0.22, now + 0.27);
+      g2.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+      o2.start(now + 0.24);
+      o2.stop(now + 0.46);
+    };
+    let timer;
+    if (!telemetry.operationMode) {
+      // not armed → dual-tone every 6s
+      makeBeep();
+      timer = setInterval(makeBeep, 6000);
+    }
+    return () => timer && clearInterval(timer);
+  }, [telemetry.operationMode, beepEnabled]);
 
   // Handle command sending from the sidebar
   const handleSendCommand = (command) => {
@@ -373,46 +433,67 @@ function App() {
       }));
 
       // Update telemetry state from JSON with all fields
-      setTelemetry((prev) => ({
-        ...prev,
-        state: receivedData.state || 0,
-        operationMode: receivedData.operation_mode || 0,
-        latitude: receivedData.gps_data?.latitude || 0,
-        longitude: receivedData.gps_data?.longitude || 0,
-        altitude: receivedData.gps_data?.gps_altitude || 0, // GPS altitude
-        altitudeAGL: receivedData.alt_data?.AGL || 0, // Barometric altitude AGL
-        pressure: receivedData.alt_data?.pressure || 0,
-        temperature: receivedData.alt_data?.temperature || 0,
-        pyroDrogue: receivedData.chute_state?.pyro1_state || 0,
-        pyroMain: receivedData.chute_state?.pyro2_state || 0,
-        batteryVoltage: receivedData.battery_voltage || 0,
-        rssi: receivedData.wifi_rssi || 0,
-        velocity: receivedData.alt_data?.velocity || 0,
-        recordNumber: receivedData.record_number || 0,
-        // Update acceleration and gyro data
-        acceleration: {
-          ax: receivedData.acc_data?.ax || 0,
-          ay: receivedData.acc_data?.ay || 0,
-          az: receivedData.acc_data?.az || 0,
-          pitch: receivedData.acc_data?.pitch || 0,
-          roll: receivedData.acc_data?.roll || 0,
-        },
-        gyro: {
-          gx: receivedData.gyro_data?.gx || 0,
-          gy: receivedData.gyro_data?.gy || 0,
-          gz: receivedData.gyro_data?.gz || 0,
-        },
-        kalman: {
-          altitude: receivedData.kalman_data?.altitude || 
-                   receivedData.kalman_altitude || 
-                   receivedData.alt_data?.kalman_altitude || 0,
-          verticalVelocity: receivedData.kalman_data?.vertical_velocity || 
-                           receivedData.kalman_vertical_velocity || 
-                           receivedData.alt_data?.kalman_vertical_velocity || 0,
-        },
-        communicationMode: commMode, // Always 'Beacon' or 'MQTT'
-        packetsReceived: receivedData.packets_received || 0,
-      }));
+      setTelemetry((prev) => {
+        const lat = receivedData.gps_data?.latitude || 0;
+        const lon = receivedData.gps_data?.longitude || 0;
+        // Only add to path if valid
+        if (lat && lon) {
+          setPath((prevPath) => {
+            // Only add if changed
+            if (prevPath.length === 0 || prevPath[prevPath.length - 1][0] !== lat || prevPath[prevPath.length - 1][1] !== lon) {
+              return [...prevPath, [lat, lon]];
+            }
+            return prevPath;
+          });
+        }
+        return {
+          ...prev,
+          state: receivedData.state || 0,
+          operationMode: receivedData.operation_mode || 0,
+          latitude: lat,
+          longitude: lon,
+          altitude: (receivedData.gps_data?.gps_altitude ?? receivedData.gps_data?.altitude ?? 0),
+          altitudeAGL: receivedData.alt_data?.AGL || 0,
+          pressure: receivedData.alt_data?.pressure || 0,
+          temperature: receivedData.alt_data?.temperature || 0,
+          pyroDrogue: (
+            receivedData.pyro1_state ??
+            receivedData.chute_state?.pyro1_state ??
+            receivedData.chute_state?.drogue ?? 0
+          ),
+          pyroMain: (
+            receivedData.pyro2_state ??
+            receivedData.chute_state?.pyro2_state ??
+            receivedData.chute_state?.main ?? 0
+          ),
+          batteryVoltage: receivedData.battery_voltage || 0,
+          rssi: receivedData.wifi_rssi || 0,
+          velocity: receivedData.alt_data?.velocity || 0,
+          recordNumber: receivedData.record_number || 0,
+          acceleration: {
+            ax: receivedData.acc_data?.ax || 0,
+            ay: receivedData.acc_data?.ay || 0,
+            az: receivedData.acc_data?.az || 0,
+            pitch: receivedData.acc_data?.pitch || 0,
+            roll: receivedData.acc_data?.roll || 0,
+          },
+          gyro: {
+            gx: receivedData.gyro_data?.gx || 0,
+            gy: receivedData.gyro_data?.gy || 0,
+            gz: receivedData.gyro_data?.gz || 0,
+          },
+          kalman: {
+            altitude: receivedData.kalman_data?.altitude || 
+                     receivedData.kalman_altitude || 
+                     receivedData.alt_data?.kalman_altitude || 0,
+            verticalVelocity: receivedData.kalman_data?.vertical_velocity || 
+                             receivedData.kalman_vertical_velocity || 
+                             receivedData.alt_data?.kalman_vertical_velocity || 0,
+          },
+          communicationMode: commMode,
+          packetsReceived: receivedData.packets_received || 0,
+        };
+      });
 
       try {
         // Update charts
@@ -517,12 +598,12 @@ function App() {
           operationMode: receivedData.operation_mode,
           latitude: receivedData.gps_data.latitude,
           longitude: receivedData.gps_data.longitude,
-          altitude: receivedData.gps_data.gps_altitude,
+          altitude: (receivedData.gps_data.gps_altitude ?? receivedData.gps_data.altitude ?? 0),
           altitudeAGL: receivedData.alt_data.AGL,
           pressure: receivedData.alt_data.pressure,
           temperature: receivedData.alt_data.temperature,
-          pyroDrogue: receivedData.chute_state.pyro1_state,
-          pyroMain: receivedData.chute_state.pyro2_state,
+          pyroDrogue: (receivedData.pyro1_state ?? receivedData.chute_state.pyro1_state ?? receivedData.chute_state.drogue ?? 0),
+          pyroMain: (receivedData.pyro2_state ?? receivedData.chute_state.pyro2_state ?? receivedData.chute_state.main ?? 0),
           batteryVoltage: receivedData.battery_voltage,
           rssi: receivedData.wifi_rssi,
           velocity: receivedData.alt_data.velocity,
@@ -667,7 +748,7 @@ function App() {
           </div>
           <div className="flex w-full p-2">
             <div className="h-[500px] w-[1555px] z-0 ">
-              <Map position={[telemetry.latitude, telemetry.longitude]} />
+              <Map position={[telemetry.latitude, telemetry.longitude]} path={path} />
             </div>
           </div>
           <Footer />

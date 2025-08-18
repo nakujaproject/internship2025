@@ -384,3 +384,22 @@ client.send(message);
 ```
 
 ---
+
+## Map tiles troubleshooting
+- Overrides dropdown in the UI lets you Arm/Disarm Drogue/Main, toggle Auto Fallback, and Reset. In simulation mode these commands update the simulated CSV fields for drogue/main.
+- The app beeps every 5s when the rocket is not armed; click anywhere once to allow audio.
+
+
+- The app proxies local tiles from a tileserver running on http://127.0.0.1:8080 via Vite at `/tiles/...`.
+- The Map component auto-detects a working style from common tileserver-gl presets (basic-preview, basic, bright, klokantech-basic, positron, osm-bright, streets, voyager). If none respond, it falls back to OpenStreetMap online tiles.
+- To force a specific style, add this to an `.env` file and restart the dev server:
+
+```env
+VITE_TILES_STYLE=bright
+```
+
+- If you still see 500 errors for `/tiles/...`, ensure your tileserver is running and serving the requested style:
+  - CLI mode: `tileserver-gl --file osm-2020-02-10-v3.11_africa_kenya.mbtiles`
+  - Docker mode: `docker run --rm -p 8080:8080 -v %CD%:/data maptiler/tileserver-gl --file osm-2020-02-10-v3.11_africa_kenya.mbtiles`
+  - Visit http://127.0.0.1:8080 in your browser to see available styles and adjust `VITE_TILES_STYLE` accordingly.
+

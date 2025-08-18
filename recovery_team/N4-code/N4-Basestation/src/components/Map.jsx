@@ -4,9 +4,11 @@ import {
   Marker,
   Popup,
   Circle,
+  Polyline,
   useMapEvent,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css"; // important
+import L from "leaflet";
 
 function CurrentPosition({ position }) {
   const map = useMapEvent("click", () => {
@@ -19,23 +21,11 @@ function CurrentPosition({ position }) {
   );
 }
 
-function Map({ position }) {
-  // if ("geolocation" in navigator) {
-  //     // Geolocation is available
-  //     navigator.geolocation.getCurrentPosition(
-  //       (position) => {
-  //         const latitude = position.coords.latitude;
-  //         const longitude = position.coords.longitude;
-  //         console.log(`Your position is : ${latitude} ${longitude}`);
-  //       },
-  //       (error) => {
-  //         console.log("Error getting location:", error.message);
-  //       }
-  //     );
-  //   } else {
-  //     // Geolocation is not available
-  //     console.error("Geolocation is not supported by your browser.");
-  //   }
+
+function Map({ position, path }) {
+  // Draw the path as a polyline, show start/end markers
+  const start = path && path.length > 0 ? path[0] : null;
+  const end = path && path.length > 0 ? path[path.length - 1] : null;
 
   return (
     <MapContainer
@@ -45,15 +35,22 @@ function Map({ position }) {
       style={{ height: "100%", width: "100%" }}
     >
       <TileLayer
-        attribution='&copy; <a href=\"https://www.maptiler.com/copyright/\" target=\"_blank\">&copy; MapTiler</a> <a href=\"https://www.openstreetmap.org/copyright\" target=\"_blank\">&copy; OpenStreetMap contributors</a> contributors'
-        // Served via Vite proxy (see vite.config.js server.proxy['/tiles'])
-        url="/tiles/styles/basic-preview/{z}/{x}/{y}.png"
+        attribution='&copy; MapTiler &amp; OpenStreetMap contributors'
+        url="http://localhost:8080/styles/basic-preview/{z}/{x}/{y}.png"
       />
-      <Circle center={position} pathOptions={{ fillColor: "blue" }} radius={20}>
-        <Marker position={position}>
-          <Popup>Rocket's Position</Popup>
+      {path && path.length > 1 && (
+        <Polyline positions={path} color="red" />
+      )}
+      {start && (
+        <Marker position={start}>
+          <Popup>We are here</Popup>
         </Marker>
-      </Circle>
+      )}
+      {end && (
+        <Marker position={end}>
+          <Popup>Rocket location</Popup>
+        </Marker>
+      )}
       <CurrentPosition position={position} />
     </MapContainer>
   );

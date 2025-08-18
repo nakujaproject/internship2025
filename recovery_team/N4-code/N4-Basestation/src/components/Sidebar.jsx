@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import nakujaLogo from "../assets/nakujaLogo.png";
 
 import Button from "./Button";
+import OverridesDropdown from "./OverridesDropdown";
 import LogNotification from "./LogNotification";
 
 import {
@@ -35,6 +36,8 @@ function Sidebar(props) {
   const [currentCommMode, setCurrentCommMode] = useState("MQTT"); // Track current communication mode
   const [autoFallbackEnabled, setAutoFallbackEnabled] = useState(false); // Track auto fallback state
   const [lastPressedButton, setLastPressedButton] = useState(""); // Track last pressed button for feedback
+  const [drogueArmed, setDrogueArmed] = useState(false);
+  const [mainArmed, setMainArmed] = useState(false);
 
   // Effects - using direct state setters for immediate updates
   useEffect(() => {
@@ -48,10 +51,12 @@ function Sidebar(props) {
 
   useEffect(() => {
     setPyroMain(props.pyroMain);
+  setMainArmed(!!props.pyroMain);
   }, [props.pyroMain]);
 
   useEffect(() => {
     setPyroDrougue(props.pyroDrogue);
+  setDrogueArmed(!!props.pyroDrogue);
   }, [props.pyroDrogue]);
 
   useEffect(() => {
@@ -94,6 +99,18 @@ function Sidebar(props) {
       
       // Handle state changes for toggleable commands
       switch(command.command) {
+        case "drogue_arm":
+          setDrogueArmed(true);
+          break;
+        case "drogue_disarm":
+          setDrogueArmed(false);
+          break;
+        case "main_arm":
+          setMainArmed(true);
+          break;
+        case "main_disarm":
+          setMainArmed(false);
+          break;
         case "mqtt":
           setCurrentCommMode("MQTT");
           break;
@@ -168,6 +185,14 @@ function Sidebar(props) {
               </div>
             </div>
           </div>
+
+          {/* Overrides dropdown under Arm container (Drogue/Main buttons inside) */}
+          <OverridesDropdown
+            drogueArmed={drogueArmed}
+            mainArmed={mainArmed}
+            isConnected={props.isConnected}
+            onSendCommand={(cmd) => handleCommandClick({ command: cmd.toLowerCase() })}
+          />
 
           <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-800 relative">
             <div className="text-sm uppercase -mt-9 bg-white px-1 z-10 relative h-1/2">

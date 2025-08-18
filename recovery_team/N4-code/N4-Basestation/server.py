@@ -6,13 +6,16 @@ import threading
 import paho.mqtt.client as mqtt
 from serial.tools import list_ports
 from threading import Lock
-from datetime import datetime
+from datetime import datetime, timezone
 import subprocess
 import os
-import signal
 import atexit
 import csv
 from pathlib import Path
+import shutil
+import sqlite3
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse
 
 # === OPTIONAL GUI (tkinter) ===
 try:
@@ -38,7 +41,17 @@ COMMAND_TIMEOUT = 3         # Wait 3 seconds for command response
 AUTO_DETECT_INTERVAL = 5    # Check for active connection every 5 seconds
 USB_RECONNECT_INTERVAL = 2  # Check for USB reconnection every 2 seconds
 USB_MONITOR_ENABLED = True  # Enable/disable USB monitoring
-PORT_8080 = 8080           # Port for development server
+PORT_8080 = 8080           # Port for development server (used by external tileserver)
+
+# === CONTROL & TEST FLAGS ===
+# USE_GUI_CONTROL: 1 = control via Tkinter GUI; 0 = control via React app (MQTT commands)
+USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '0'))
+# SIMULATION_MODE: 1 = simulate telemetry; 0 = use real serial
+SIMULATION_MODE = int(os.environ.get('N4_SIM', '0'))
+SIM_RATE_HZ = int(os.environ.get('N4_SIM_RATE', '20'))
+
+# === MAP/TILES SETUP ===
+# Tiles are served externally (e.g., tileserver-gl on 8080). No internal tileserver here.
 
 # === CSV LOGGING CONFIG ===
 CSV_LOGGING_ENABLED = True
@@ -56,117 +69,38 @@ CSV_FIELDNAMES = [
 ]
 
 # === APP STARTUP MANAGEMENT ===
-app_processes = []  # Store spawned processes
+app_processes = []  # Deprecated: left empty for backward compatibility
+
+"""
+Tiles are served by an external process (tileserver-gl) started by start_basestation.py.
+Internal Python tileserver code removed for simplicity and stability.
+"""
+
+def get_node_major_version():
+    try:
+        out = subprocess.check_output(["node", "-v"], text=True, timeout=3).strip()
+        # v22.18.0 -> 22
+        if out.startswith('v'):
+            out = out[1:]
+        major = int(out.split('.')[0])
+        return major
+    except Exception:
+        return None
+
+def docker_available():
+    return False
 
 def kill_processes_on_port(port):
-    """Kill any processes running on the specified port using Windows netstat and taskkill"""
-    try:
-        # Use netstat to find processes using the port
-        netstat_cmd = f"netstat -ano | findstr :{port}"
-        result = subprocess.run(netstat_cmd, shell=True, capture_output=True, text=True)
-        
-        if result.returncode == 0 and result.stdout:
-            lines = result.stdout.strip().split('\n')
-            pids = set()
-            
-            for line in lines:
-                parts = line.split()
-                if len(parts) >= 5 and 'LISTENING' in line:
-                    pid = parts[-1]
-                    if pid.isdigit():
-                        pids.add(pid)
-            
-            for pid in pids:
-                try:
-                    logger.info(f"🔪 Killing process {pid} on port {port}")
-                    subprocess.run(f"taskkill /PID {pid} /F", shell=True, capture_output=True)
-                except Exception as e:
-                    logger.warning(f"⚠️ Could not kill process {pid}: {e}")
-                    
-    except Exception as e:
-        logger.warning(f"⚠️ Error killing processes on port {port}: {e}")
+    # Orchestration moved to start_basestation.py
+    return
 
 def start_app_services():
-    """Start all app services"""
-    global app_processes
-    
-    # Kill any existing processes on port 8080
-    kill_processes_on_port(PORT_8080)
-    time.sleep(1)
-    
-    logger.info("🚀 Starting application services...")
-    
-    try:
-        # Start npm dev server
-        logger.info("📦 Starting npm dev server...")
-        npm_process = subprocess.Popen(
-            ["cmd", "/c", "npm", "run", "dev"],
-            shell=True,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-        app_processes.append(("npm", npm_process))
-        logger.info("✅ npm dev server started")
-        
-        # Start tileserver-gl
-        logger.info("🗺️ Starting tileserver...")
-        tileserver_process = subprocess.Popen(
-            ["cmd", "/c", "tileserver-gl", "--file", "osm-2020-02-10-v3.11_africa_kenya.mbtiles"],
-            shell=True,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-        app_processes.append(("tileserver", tileserver_process))
-        logger.info("✅ Tileserver started")
-        
-        # Start mosquitto
-        logger.info("🦟 Starting mosquitto...")
-        mosquitto_process = subprocess.Popen(
-            ["cmd", "/c", "mosquitto", "-c", "mosquitto.conf", "-v"],
-            shell=True,
-            cwd=os.getcwd(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-        )
-        app_processes.append(("mosquitto", mosquitto_process))
-        logger.info("✅ Mosquitto started")
-        
-        # Give services time to start
-        time.sleep(3)
-        
-        logger.info("🎉 All application services started successfully!")
-        
-        # Wait a bit more for Mosquitto to fully initialize
-        logger.info("⏳ Waiting for Mosquitto to initialize...")
-        time.sleep(2)
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to start app services: {e}")
+    # Orchestration moved to start_basestation.py
+    logger.info("ℹ External services should be started by start_basestation.py")
 
 def cleanup_processes():
-    """Clean up spawned processes"""
-    global app_processes
-    logger.info("🧹 Cleaning up processes...")
-    
-    for name, process in app_processes:
-        try:
-            if process.poll() is None:  # Process is still running
-                logger.info(f"🔪 Terminating {name} process...")
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"⚠️ Force killing {name} process...")
-                    process.kill()
-        except Exception as e:
-            logger.error(f"❌ Error cleaning up {name}: {e}")
-    
-    app_processes.clear()
+    # No child processes are spawned by this module anymore
+    return
 
 # Register cleanup function
 atexit.register(cleanup_processes)
@@ -510,7 +444,7 @@ def update_last_telemetry(data: dict):
         gps_alt = gps.get('altitude') or gps.get('gps_altitude')
         agl = alt_data.get('AGL')
         kal_alt = kalman.get('altitude')
-        ts = datetime.utcnow().isoformat(timespec='seconds') + 'Z'
+        ts = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
         logger.info(f"TELEM t={ts} RSSI={rssi} lat={lat} lon={lon} gps_alt={gps_alt} AGL={agl} kal_alt={kal_alt}")
     except Exception as e:
         logger.debug(f"Telemetry summary print failed: {e}")
@@ -568,8 +502,44 @@ def on_mqtt_message(client, userdata, msg):
     try:
         if msg.topic == MQTT_COMMAND_TOPIC:
             cmd = msg.payload.decode().strip()
+            if USE_GUI_CONTROL:
+                logger.info(f"📨 MQTT command ignored (GUI control active): {cmd}")
+                return
             logger.info(f"📨 MQTT command: {cmd}")
-            send_command(cmd, "MQTT")
+            # Handle overrides in simulation mode locally; otherwise forward to serial
+            handled = False
+            upper = cmd.upper()
+            if SIMULATION_MODE:
+                from datetime import datetime as _dt
+                # Maintain sim override states
+                global SIM_DROGUE_ARMED, SIM_MAIN_ARMED, SIM_AUTO_FALLBACK, SIM_ARMED
+                if upper in ("ARM", "DISARM", "DROGUE_ARM", "DROGUE_DISARM", "MAIN_ARM", "MAIN_DISARM", "AUTO_ON", "AUTO_OFF"):
+                    if upper == "DROGUE_ARM":
+                        SIM_DROGUE_ARMED = 1
+                    elif upper == "DROGUE_DISARM":
+                        SIM_DROGUE_ARMED = 0
+                    elif upper == "MAIN_ARM":
+                        SIM_MAIN_ARMED = 1
+                    elif upper == "MAIN_DISARM":
+                        SIM_MAIN_ARMED = 0
+                    elif upper == "ARM":
+                        SIM_ARMED = 1
+                    elif upper == "DISARM":
+                        SIM_ARMED = 0
+                    elif upper == "AUTO_ON":
+                        SIM_AUTO_FALLBACK = True
+                    elif upper == "AUTO_OFF":
+                        SIM_AUTO_FALLBACK = False
+                    logger.info(f"🧪 [SIM] Override applied: drogue={SIM_DROGUE_ARMED}, main={SIM_MAIN_ARMED}, auto={SIM_AUTO_FALLBACK}")
+                    # Immediately publish one simulated line to update UI now
+                    try:
+                        csv_line = generate_sim_csv(0, time.time())
+                        process_serial_data(csv_line)
+                    except Exception:
+                        pass
+                    handled = True
+            if not handled:
+                send_command(cmd, "MQTT")
             
         elif msg.topic == MQTT_TELEMETRY_TOPIC:
             payload = msg.payload.decode(errors='replace').strip()
@@ -614,6 +584,10 @@ def on_mqtt_message(client, userdata, msg):
                                 "drogue": int(fields[19]),
                                 "main": int(fields[20])
                             },
+                            "pyro1_state": int(fields[19]),
+                            "pyro2_state": int(fields[20]),
+                            "pyro1_state": int(fields[19]),
+                            "pyro2_state": int(fields[20]),
                             "battery_voltage": float(fields[21]),
                             "wifi_rssi": int(fields[22]),
                             "kalman_data": {
@@ -624,6 +598,12 @@ def on_mqtt_message(client, userdata, msg):
                             "timestamp": time.time(),
                             "raw": payload  # Include raw data for reference
                         }
+                        # Add app-friendly flat fields
+                        data["pyroDrogue"] = data["chute_state"]["drogue"]
+                        data["pyroMain"] = data["chute_state"]["main"]
+                        # Add app-friendly flat fields
+                        data["pyroDrogue"] = data["chute_state"]["drogue"]
+                        data["pyroMain"] = data["chute_state"]["main"]
                         update_last_telemetry(data)
                         if mqtt_connected:
                             client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
@@ -777,6 +757,13 @@ def process_serial_data(line):
                 data['kalman_altitude'] = kalman_alt
                 data['kalman_vertical_velocity'] = kalman_vel
                 
+                # Flatten chute state for the app
+                if isinstance(data.get('chute_state'), dict):
+                    data['pyroDrogue'] = data['chute_state'].get('drogue', 0)
+                    data['pyroMain'] = data['chute_state'].get('main', 0)
+                    data['pyro1_state'] = data['pyroDrogue']
+                    data['pyro2_state'] = data['pyroMain']
+
                 # Normalize communication mode
                 data["communication_mode"] = data.get("communication_mode", "BEACON").upper()
                 update_last_telemetry(data)
@@ -871,6 +858,89 @@ def main_loop():
         except Exception as e:
             logger.error(f"❌ Main loop error: {e}")
             time.sleep(1)
+
+# === TELEMETRY SIMULATOR ===
+sim_thread = None
+sim_running = False
+SIM_DROGUE_ARMED = 0
+SIM_MAIN_ARMED = 0
+SIM_AUTO_FALLBACK = False
+SIM_ARMED = 0
+
+def generate_sim_csv(record_number: int, t0: float):
+    """Generate one 25-field CSV row matching firmware format."""
+    import math
+    # Simulate a moving path: lat/lon change over time in a curve
+    t = time.time() - t0
+    ax, ay, az = 0.0, 0.0, 1.0
+    pitch, roll = 0.0, 0.0
+    gx, gy, gz = 0.0, 0.0, 0.0
+    # Start: Nairobi CBD, move east and north in a curve
+    start_lat, start_lon = -1.286389, 36.817223
+    # Path: spiral outwards, then stop
+    radius = 0.01 + 0.0005 * t  # meters to degrees
+    angle = t * 0.15  # radians, slow rotation
+    lat = start_lat + radius * math.cos(angle)
+    lon = start_lon + radius * math.sin(angle)
+    gps_alt = 1660.0 + 10 * math.sin(t/10)
+    gps_time = int(time.time())
+    pressure = 85000.0
+    temperature = 25.0
+    alt_agl = max(0.0, 100.0 * math.sin(min(t, 60)/60.0 * math.pi))
+    vel = 100.0 * (math.pi/60.0) * math.cos(min(t, 60)/60.0 * math.pi)
+    # Apply overrides; if AUTO fallback, keep time-based auto as well
+    if SIM_AUTO_FALLBACK:
+        auto_drogue = 1 if t > 30 else 0
+        auto_main = 1 if t > 40 else 0
+        drogue = max(SIM_DROGUE_ARMED, auto_drogue)
+        main = max(SIM_MAIN_ARMED, auto_main)
+    else:
+        drogue = SIM_DROGUE_ARMED
+        main = SIM_MAIN_ARMED
+    battery = 11.8
+    rssi = int(-40 - 20*math.log10(1+t))
+    kal_alt = alt_agl * 0.98
+    kal_vv = vel * 0.95
+
+    fields = [
+        record_number,  # 0 record_number
+        SIM_ARMED,      # 1 operation_mode (user-controlled in SIM)
+        1,              # 2 state
+        ax, ay, az,     # 3-5 acc
+        pitch, roll,    # 6-7
+        gx, gy, gz,     # 8-10 gyro
+        lat, lon, gps_alt, gps_time,  # 11-14 gps
+        pressure, temperature, alt_agl, vel,  # 15-18 alt data
+        drogue, main,   # 19-20 chute
+        battery, rssi,  # 21-22 battery & rssi
+        kal_alt, kal_vv # 23-24 kalman
+    ]
+    return ",".join(str(x) for x in fields)
+
+def simulation_loop():
+    global sim_running
+    logger.info("🧪 Simulation mode active: generating telemetry")
+    sim_running = True
+    rate = max(1, SIM_RATE_HZ)
+    period = 1.0 / rate
+    rn = 0
+    t0 = time.time()
+    while sim_running:
+        rn += 1
+        csv_line = generate_sim_csv(rn, t0)
+        process_serial_data(csv_line)
+        time.sleep(period)
+
+def start_simulation():
+    global sim_thread
+    if sim_thread and sim_thread.is_alive():
+        return
+    sim_thread = threading.Thread(target=simulation_loop, daemon=True)
+    sim_thread.start()
+
+def stop_simulation():
+    global sim_running
+    sim_running = False
 
 def command_interface():
     """Interactive command interface"""
@@ -983,7 +1053,7 @@ def start_gui():
                 gps = data.get('gps_data', {})
                 alt_data = data.get('alt_data', {})
                 kalman = data.get('kalman_data', {})
-                vars_map['timestamp'].set(datetime.utcnow().strftime('%H:%M:%S'))
+                vars_map['timestamp'].set(datetime.now(timezone.utc).strftime('%H:%M:%S'))
                 vars_map['rssi'].set(data.get('wifi_rssi', data.get('rssi', '-')))
                 vars_map['lat'].set(f"{gps.get('latitude', '-'):.6f}" if isinstance(gps.get('latitude'), (int,float)) else '-')
                 vars_map['lon'].set(f"{gps.get('longitude', '-'):.6f}" if isinstance(gps.get('longitude'), (int,float)) else '-')
@@ -1007,15 +1077,8 @@ def start_gui():
     return gt
 
 if __name__ == '__main__':
-    logger.info("🚀 Starting N4 Base Station Server")
+    logger.info("🚀 Starting N4 Base Station Server (headless; external services assumed running)")
     try:
-        headless = os.environ.get('N4_HEADLESS') == '1'
-        if not headless:
-            # Start application services first
-            start_app_services()
-        else:
-            logger.info("HEADLESS mode: skipping external services start")
-
         # Setup CSV logging
         setup_csv_logging()
 
@@ -1025,15 +1088,19 @@ if __name__ == '__main__':
         # Start USB monitoring
         start_usb_monitor()
 
-        # Attempt initial serial connection
-        open_serial()
+        # Simulation vs real serial
+        if SIMULATION_MODE:
+            logger.info("SIMULATION_MODE=1: skipping serial open and starting simulator")
+            start_simulation()
+        else:
+            open_serial()
 
         # Start main loop in background
         loop_thread = threading.Thread(target=main_loop, daemon=True)
         loop_thread.start()
 
-        # Start GUI (non-blocking) unless headless
-        if not headless:
+        # Start GUI only if enabled
+        if USE_GUI_CONTROL:
             start_gui()
 
         # Run command interface (blocking until quit)
@@ -1044,10 +1111,10 @@ if __name__ == '__main__':
     finally:
         # Cleanup
         stop_usb_monitor()
+        stop_simulation()
         close_serial()
         try:
             client.disconnect()
         except Exception:
             pass
-        cleanup_processes()
         logger.info("👋 Shutdown complete")
