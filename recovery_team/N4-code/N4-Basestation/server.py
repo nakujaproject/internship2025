@@ -49,7 +49,7 @@ N4_COM_PORT = os.environ.get('N4_COM_PORT', 'COM13').strip()
 
 # === CONTROL & TEST FLAGS ===
 # USE_GUI_CONTROL: 1 = control via Tkinter GUI; 0 = control via React app (MQTT commands)
-USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '0'))
+USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '1'))
 # SIMULATION_MODE: 1 = simulate telemetry; 0 = use real serial
 SIMULATION_MODE = int(os.environ.get('N4_SIM', '0'))
 SIM_RATE_HZ = int(os.environ.get('N4_SIM_RATE', '20'))
@@ -1076,6 +1076,13 @@ def start_gui():
             if not ok:
                 logger.warning(f"GUI command {c} failed")
 
+        # Main arm/disarm buttons
+        ttk.Button(btn_frame, text="ARM MAIN", command=lambda: send_cmd("ARM_MAIN")).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="DISARM MAIN", command=lambda: send_cmd("DISARM_MAIN")).pack(side='left', padx=5)
+        # Drogue arm/disarm buttons
+        ttk.Button(btn_frame, text="ARM DROGUE", command=lambda: send_cmd("ARM_DROGUE")).pack(side='left', padx=5)
+        ttk.Button(btn_frame, text="DISARM DROGUE", command=lambda: send_cmd("DISARM_DROGUE")).pack(side='left', padx=5)
+        # Legacy/status buttons
         for c in ["ARM", "DISARM", "STATUS"]:
             ttk.Button(btn_frame, text=c, command=lambda cc=c: send_cmd(cc)).pack(side='left', padx=5)
 
