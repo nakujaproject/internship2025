@@ -66,7 +66,13 @@ double altimeter_get_pressure();
 void mqtt_command_processor(const char*, const char*);
 void arm_pyros();
 void disarm_pyros();
-void chutesInit();   
+void chutesInit();
+// void armMainChute();
+// void disarmMainChute();
+// void armDrogueChute();
+// void disarmDrogueChute();
+void checkChuteStatus();
+
 void espnowCommandTask(void* pvParameters);
 SDLogger sdLogger(SD_CS_PIN);
 
@@ -99,7 +105,11 @@ bool getLatestTelemetryBuffer(char* buffer, size_t buffer_size) {
 // Create transmitter instance
 ESPNowBeaconTransmitter transmitter(ROCKET_MAC, BASE_MAC);
 
-
+unsigned long mainPyroArmTime = 0;
+unsigned long droguePyroArmTime = 0;
+const unsigned long PYRO_ARM_DURATION = 10 * 1000; // 5 minutes
+bool mainPyroArmed = false;
+bool droguePyroArmed = false;
 
 void arm_pyros() {
     digitalWrite(REMOTE_SWITCH, HIGH);
@@ -158,14 +168,6 @@ void chutesInit() {
     digitalWrite(DROGUE_PIN, LOW); // set drogue pin LOW
     digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW); // set main chute pin LOW
     digitalWrite(REMOTE_SWITCH, LOW); // set remote switch LOW
-
-    // Setup LEDC PWM for drogue & main outputs (override direct digital writes once deployed)
-    ledcSetup(DROGUE_PWM_CHANNEL, PYRO_PWM_FREQ, PYRO_PWM_RES_BITS);
-    ledcSetup(MAIN_PWM_CHANNEL, PYRO_PWM_FREQ, PYRO_PWM_RES_BITS);
-    ledcAttachPin(DROGUE_PIN, DROGUE_PWM_CHANNEL);
-    ledcAttachPin(MAIN_CHUTE_EJECT_PIN, MAIN_PWM_CHANNEL);
-    ledcWrite(DROGUE_PWM_CHANNEL, 0);
-    ledcWrite(MAIN_PWM_CHANNEL, 0);
 }
 
 /**
@@ -176,6 +178,51 @@ void disarm_pyros() {
     // Small delay to ensure pin state is stable
     vTaskDelay(pdMS_TO_TICKS(10));
 }
+
+
+void armMainPyro() {
+    analogWrite(MAIN_CHUTE_EJECT_PIN, 255);
+    mainPyroArmTime = millis();
+    mainPyroArmed = true;
+    MAIN_CHUTE_EJECT_FLAG = 1;
+    debugln("MAIN PYRO ARMED");
+}
+
+void disarmMainPyro() {
+    analogWrite(MAIN_CHUTE_EJECT_PIN, 0);
+    mainPyroArmed = false;
+    MAIN_CHUTE_EJECT_FLAG = 0;
+    debugln("MAIN PYRO DISARMED");
+}
+
+void armDroguePyro() {
+    analogWrite(DROGUE_PIN, 255);
+    droguePyroArmTime = millis();
+    droguePyroArmed = true;
+    DROGUE_DEPLOY_FLAG = 1;
+    debugln("DROGUE PYRO ARMED");
+}
+
+void disarmDroguePyro() {
+    analogWrite(DROGUE_PIN, 0);
+    droguePyroArmed = false;
+    DROGUE_DEPLOY_FLAG = 0;
+    debugln("DROGUE PYRO DISARMED");
+}
+
+void checkAutoDisarm() {
+    if (mainPyroArmed && (millis() - mainPyroArmTime >= PYRO_ARM_DURATION)) {
+        disarmMainPyro();
+        debugln("MAIN PYRO auto-disarmed after timer");
+    }
+    if (droguePyroArmed && (millis() - droguePyroArmTime >= PYRO_ARM_DURATION)) {
+        disarmDroguePyro();
+        debugln("DROGUE PYRO auto-disarmed after timer");
+    }
+}
+
+
+
 
 /* state machine variables*/
 ARMED_FLIGHT_STATE current_state = ARMED_FLIGHT_STATE::PRE_FLIGHT_GROUND;	    /*!< The starting state - we start at PRE_FLIGHT_GROUND state */
@@ -327,13 +374,16 @@ void checkRunTestToggle() {
         debugln("MODE:TEST");
     }
 }
-
 /*!
  * @brief process commands sent from the base station
  * @param command
  * ARM
  * DISARM
  * RESET
+ * DROGUE ON
+ * DROGUE OFF
+ * MAIN ON
+ * MAIN OFF
  */
 void espnowCommandTask(void* pvParameters) {
     ESPNowBeaconTransmitter::CommandPacket cmd;
@@ -341,39 +391,31 @@ void espnowCommandTask(void* pvParameters) {
 
     while (1) {
         if (transmitter.getNextCommand(&cmd)) {
-            // Use fixed buffer instead of String to reduce stack usage
             size_t len = (cmd.length < 31) ? cmd.length : 31;
             memcpy(cmdBuffer, cmd.command, len);
             cmdBuffer[len] = '\0';
             
-            // Trim whitespace manually to avoid String operations
             while (len > 0 && (cmdBuffer[len-1] == ' ' || cmdBuffer[len-1] == '\n' || cmdBuffer[len-1] == '\r')) {
                 cmdBuffer[--len] = '\0';
             }
 
-            // Check for communication mode commands first
             if (strncmp(cmdBuffer, "CMD_", 4) == 0) {
                 comm_manager.handleModeCommand(String(cmdBuffer), "ESP_NOW");
             }
             else if (strcmp(cmdBuffer, "ARM") == 0) {
-                // 🛡️ MANUAL ARM COMMAND: Always allow manual arming, but warn about altitude
                 #if USE_KALMAN_FOR_STATE_DETECTION
                 float current_altitude = g_current_telemetry.alt_data.kalman_altitude;
                 #else
                 float current_altitude = g_current_telemetry.alt_data.rel_altitude;
                 #endif
                 
-                // Always execute ARM command
                 arm_pyros();
                 chutesInit();
-                if (use_beacon_mode) {
-                    transmitter.setArmed(true);
-                }
-                is_system_armed = true;  // Set global armed state
+                if (use_beacon_mode) transmitter.setArmed(true);
+                is_system_armed = true;
                 operation_mode = OPERATION_MODE::ARMED_MODE;
                 blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
                 
-                // Check telemetry freshness for altitude warning
                 if ((millis() - g_last_telemetry_update) > 2000) {
                     debugln("⚠️ ARMED via ESP-NOW (Warning: Stale telemetry data)");
                     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
@@ -384,7 +426,6 @@ void espnowCommandTask(void* pvParameters) {
                     debug("m < ");
                     debug(ARM_ALTITUDE_THRESHOLD);
                     debugln("m)");
-                    
                     char log_msg[100];
                     snprintf(log_msg, sizeof(log_msg), "ARMED via ESP-NOW - Low altitude %.1fm\r\n", current_altitude);
                     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
@@ -393,38 +434,54 @@ void espnowCommandTask(void* pvParameters) {
                     debug("🚀 ARMED via ESP-NOW (Alt: ");
                     debug(current_altitude);
                     debugln("m ✓)");
-                    
                     char log_msg[100];
                     snprintf(log_msg, sizeof(log_msg), "ARMED via ESP-NOW at %.1fm altitude\r\n", current_altitude);
                     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
                                            system_log_file, log_msg);
                 }
-                
-                // Yield CPU after ARM operation to ensure stack integrity
                 vTaskDelay(pdMS_TO_TICKS(50));
             } 
             else if (strcmp(cmdBuffer, "DISARM") == 0) {
                 disarm_pyros();
-                if (use_beacon_mode) {
-                    transmitter.setArmed(false);
-                }
-                is_system_armed = false;  // Set global armed state
+                if (use_beacon_mode) transmitter.setArmed(false);
+                is_system_armed = false;
                 operation_mode = OPERATION_MODE::SAFE_MODE;
                 blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
                 debugln("🛑 DISARMED via ESP-NOW");
-                
                 SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
                                        system_log_file, "DISARMED via ESP-NOW\r\n");
-                
-                // Yield CPU after DISARM operation to ensure stack integrity
                 vTaskDelay(pdMS_TO_TICKS(50));
             } 
             else if (strcmp(cmdBuffer, "RESET") == 0) {
                 debugln("🔄 RESET via ESP-NOW");
                 SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
                                        system_log_file, "RESET via ESP-NOW\r\n");
-                vTaskDelay(pdMS_TO_TICKS(100)); // Small delay before restart
+                vTaskDelay(pdMS_TO_TICKS(100));
                 ESP.restart();
+            }
+            else if (strcmp(cmdBuffer, "DROGUE_ON") == 0) {
+                armDroguePyro();
+                debugln("🪂 DROGUE CHUTE ARMED via ESP-NOW");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                       system_log_file, "DROGUE CHUTE ARMED via ESP-NOW\r\n");
+            }
+            else if (strcmp(cmdBuffer, "DROGUE_OFF") == 0) {
+                disarmDroguePyro();
+                debugln("🪂 DROGUE CHUTE DISARMED via ESP-NOW");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                       system_log_file, "DROGUE CHUTE DISARMED via ESP-NOW\r\n");
+            }
+            else if (strcmp(cmdBuffer, "MAIN_ON") == 0) {
+                armMainPyro();
+                debugln("🪂 MAIN CHUTE ARMED via ESP-NOW");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                       system_log_file, "MAIN CHUTE ARMED via ESP-NOW\r\n");
+            }
+            else if (strcmp(cmdBuffer, "MAIN_OFF") == 0) {
+                disarmMainPyro();
+                debugln("🪂 MAIN CHUTE DISARMED via ESP-NOW");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                       system_log_file, "MAIN CHUTE DISARMED via ESP-NOW\r\n");
             }
             else {
                 debugln("Unknown ESP-NOW cmd: " + String(cmdBuffer));
@@ -432,39 +489,29 @@ void espnowCommandTask(void* pvParameters) {
                                        system_log_file, ("Unknown ESP-NOW cmd: " + String(cmdBuffer) + "\r\n").c_str());
             }
         }
-
         vTaskDelay(pdMS_TO_TICKS(100));
     }
+    checkAutoDisarm();
 }
 
 
 
-
 void mqtt_command_processor(const char* topic, const char* payload) {
-    // Check if the topic is the commands topic (n4/commands)
     if(strcmp(topic, "n4/commands") == 0) {
-        
         String command = String(payload);
         
-        // Check for communication mode commands first
         if(command.startsWith("CMD_")) {
             comm_manager.handleModeCommand(command, "MQTT");
             return;
         }
         
-        // Check the payload content for the actual command
         if(strcmp(payload, "ARM") == 0) {
-            // 🛡️ MANUAL ARM COMMAND: Always allow manual arming via MQTT
             arm_pyros();
             chutesInit();
-            if (use_beacon_mode) {
-                transmitter.setArmed(true);  // Only sync with ESP-NOW transmitter in beacon mode
-            }
-            is_system_armed = true;  // Set global armed state
+            if (use_beacon_mode) transmitter.setArmed(true);
+            is_system_armed = true;
             operation_mode = OPERATION_MODE::ARMED_MODE;
             blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
-            
-            // Check altitude for informational logging
             #if USE_KALMAN_FOR_STATE_DETECTION
             float current_altitude = g_current_telemetry.alt_data.kalman_altitude;
             #else
@@ -492,32 +539,49 @@ void mqtt_command_processor(const char* topic, const char* payload) {
                 SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, 
                                        system_log_file, log_msg);
             }
-            
-            // Yield CPU after ARM operation to ensure stack integrity
             vTaskDelay(pdMS_TO_TICKS(50));
         } 
         else if(strcmp(payload, "DISARM") == 0) {
             disarm_pyros();
-            if (use_beacon_mode) {
-                transmitter.setArmed(false);  // Only sync with ESP-NOW transmitter in beacon mode
-            }
-            is_system_armed = false;  // Set global armed state
+            if (use_beacon_mode) transmitter.setArmed(false);
+            is_system_armed = false;
             operation_mode = OPERATION_MODE::SAFE_MODE;
             blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
             debugln("🛑 DISARMED via MQTT");
-            
             SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
                                    system_log_file, "DISARMED via MQTT\r\n");
-            
-            // Yield CPU after DISARM operation to ensure stack integrity
             vTaskDelay(pdMS_TO_TICKS(50));
         } 
         else if(strcmp(payload, "RESET") == 0) {
             debugln("🔄 RESET via MQTT");
             SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
                                    system_log_file, "RESET via MQTT\r\n");
-            vTaskDelay(pdMS_TO_TICKS(100)); // Small delay before restart
+            vTaskDelay(pdMS_TO_TICKS(100));
             ESP.restart();
+        }
+        else if(strcmp(payload, "DROGUE_ON") == 0) {
+            armDroguePyro();
+            debugln("🪂 DROGUE CHUTE ARMED via MQTT");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                   system_log_file, "DROGUE CHUTE ARMED via MQTT\r\n");
+        }
+        else if(strcmp(payload, "DROGUE_OFF") == 0) {
+            disarmDroguePyro();
+            debugln("🪂 DROGUE CHUTE DISARMED via MQTT");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                   system_log_file, "DROGUE CHUTE DISARMED via MQTT\r\n");
+        }
+        else if(strcmp(payload, "MAIN_ON") == 0) {
+            armMainPyro();
+            debugln("🪂 MAIN CHUTE ARMED via MQTT");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                   system_log_file, "MAIN CHUTE ARMED via MQTT\r\n");
+        }
+        else if(strcmp(payload, "MAIN_OFF") == 0) {
+            disarmMainPyro();
+            debugln("🪂 MAIN CHUTE DISARMED via MQTT");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                   system_log_file, "MAIN CHUTE DISARMED via MQTT\r\n");
         }
         else {
             debugln("🔍 Unknown MQTT command: " + String(payload));
