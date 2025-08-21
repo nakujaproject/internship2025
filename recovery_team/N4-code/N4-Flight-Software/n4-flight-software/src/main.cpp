@@ -110,41 +110,44 @@ void arm_pyros() {
 void drogueChuteDeploy() {
     static bool started = false;
     static unsigned long start_ms = 0;
-    static uint8_t duty = 0;
+    static uint8_t pwm_value = 0;
 
     if (!started) {
-        // Compute duty once (approx 6V from 15V supply)
-        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE; if (ratio > 1.0f) ratio = 1.0f;
-        duty = (uint8_t)(ratio * ((1 << PYRO_PWM_RES_BITS) - 1));
-        ledcWrite(DROGUE_PWM_CHANNEL, duty);
+        // Map desired voltage to 8-bit PWM value (0-255)
+        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE;
+        if (ratio > 1.0f) ratio = 1.0f;
+        pwm_value = (uint8_t)(ratio * 255.0f);
+        analogWrite(DROGUE_PIN, pwm_value);
         start_ms = millis();
         started = true;
         DROGUE_DEPLOY_FLAG = 1; // latch immediately for telemetry packet
-        debug("📦 DROGUE PWM START duty="); debug(duty); debugln("");
+        debug("📦 DROGUE PWM START pwm="); debug(pwm_value); debugln("");
     }
     // Maintain PWM for at least PYRO_CHARGE_TIME; keep energized afterwards (indicator) per requirement
     if (millis() - start_ms >= PYRO_CHARGE_TIME) {
-        // Optionally we could reduce holding power; keeping constant by spec (stay on)
-        // ledcWrite(DROGUE_PWM_CHANNEL, duty/2); // uncomment if you later want a reduced hold
+        // Optionally reduce holding power; keeping constant by spec (stay on)
+        // analogWrite(DROGUE_PIN, pwm_value/2); // uncomment if you want a reduced hold
     }
 }
 
 void mainChuteDeploy() {
     static bool started = false;
     static unsigned long start_ms = 0;
-    static uint8_t duty = 0;
+    static uint8_t pwm_value = 0;
 
     if (!started) {
-        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE; if (ratio > 1.0f) ratio = 1.0f;
-        duty = (uint8_t)(ratio * ((1 << PYRO_PWM_RES_BITS) - 1));
-        ledcWrite(MAIN_PWM_CHANNEL, duty);
+        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE;
+        if (ratio > 1.0f) ratio = 1.0f;
+        pwm_value = (uint8_t)(ratio * 255.0f);
+        analogWrite(MAIN_CHUTE_EJECT_PIN, pwm_value);
         start_ms = millis();
         started = true;
         MAIN_CHUTE_EJECT_FLAG = 1; // latch immediately
-        debug("📦 MAIN PWM START duty="); debug(duty); debugln("");
+        debug("📦 MAIN PWM START pwm="); debug(pwm_value); debugln("");
     }
     if (millis() - start_ms >= MAIN_DESCENT_PYRO_CHARGE_TIME) {
         // Keep on (latched). Optionally reduce power later.
+        // analogWrite(MAIN_CHUTE_EJECT_PIN, pwm_value/2); // uncomment if you want a reduced hold
     }
 }
 
