@@ -43,6 +43,14 @@ USB_RECONNECT_INTERVAL = 2  # Check for USB reconnection every 2 seconds
 USB_MONITOR_ENABLED = True  # Enable/disable USB monitoring
 PORT_8080 = 8080           # Port for development server (used by external tileserver)
 
+# === SERIAL PORT CONFIG ===
+# Optionally set COM port via environment variable (for HC-05 Bluetooth or any specific port)
+
+# === BLUETOOTH CONFIG ===
+N4_BT_NAME = os.environ.get('N4_BT_NAME', 'N4_Base_BT_1')
+N4_BT_PASSWORD = os.environ.get('N4_BT_PASSWORD', '0001')
+N4_COM_PORT = os.environ.get('N4_COM_PORT', 'COM13').strip()
+
 # === CONTROL & TEST FLAGS ===
 # USE_GUI_CONTROL: 1 = control via Tkinter GUI; 0 = control via React app (MQTT commands)
 USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '0'))
@@ -225,11 +233,42 @@ usb_monitoring = True
 
 def find_esp32_port():
     """Find ESP32 port with enhanced detection and availability check"""
+
+    # Try to enable Bluetooth adapter (Windows)
+    def enable_bluetooth():
+        try:
+            if os.name == 'nt':
+                # Enable Bluetooth using Windows shell (PowerShell)
+                subprocess.run([
+                    'powershell',
+                    '-Command',
+                    'Start-Service bthserv'
+                ], check=False)
+        except Exception as e:
+            logger.debug(f"Bluetooth enable failed: {e}")
+
+    enable_bluetooth()
+
     ports = list_ports.comports()
     esp32_ids = ['ESP32', 'CP210', 'CH340', 'CH341', 'Silicon Labs']
     bt_ids = ['HC-05', 'HC-06', 'Bluetooth', 'BTHENUM', 'Standard Serial over Bluetooth']
-    
-    # First pass: USB/TTL adapters or native ESP32
+
+    # 1. If explicit COM port is set, try it first (for HC-05 or any user-specified port)
+    if N4_COM_PORT:
+        try:
+            try_bauds = [9600, SERIAL_BAUD]
+            for baud in try_bauds:
+                try:
+                    test_conn = serial.Serial(N4_COM_PORT, baud, timeout=0.5)
+                    test_conn.close()
+                    logger.info(f"✅ Using specified COM port: {N4_COM_PORT} @ {baud} bps")
+                    return N4_COM_PORT
+                except Exception as e:
+                    logger.debug(f"Specified COM port {N4_COM_PORT} not available at {baud}: {e}")
+        except Exception as e:
+            logger.debug(f"Specified COM port {N4_COM_PORT} not available: {e}")
+
+    # 2. Auto-detect ESP32/USB/TTL adapters
     for port in ports:
         desc = (port.description or "") + " " + (port.manufacturer or "")
         hwid = port.hwid or ""
@@ -243,13 +282,24 @@ def find_esp32_port():
                 logger.debug(f"ESP32/USB found at {port.device} but not available: {e}")
                 continue
 
-    # Second pass: Bluetooth SPP (HC-05/HC-06)
+    # 3. Auto-detect Bluetooth SPP (HC-05/HC-06) by module name
     for port in ports:
         desc = (port.description or "") + " " + (port.manufacturer or "")
         hwid = port.hwid or ""
+        # Look for the configured Bluetooth module name
+        if N4_BT_NAME in desc or N4_BT_NAME in port.device:
+            try:
+                test_conn = serial.Serial(port.device, 9600, timeout=0.5)
+                test_conn.close()
+                logger.info(f"Found Bluetooth module '{N4_BT_NAME}' at {port.device}")
+                # Password is not used here, but can be used in pairing logic if needed
+                return port.device
+            except Exception as e:
+                logger.debug(f"Bluetooth port {port.device} not available: {e}")
+                continue
+        # Fallback: match generic Bluetooth IDs
         if any(id in desc for id in bt_ids) or 'BTHENUM' in hwid:
             try:
-                # HC-05 default is often 9600; we'll just test if port opens at 9600
                 test_conn = serial.Serial(port.device, 9600, timeout=0.5)
                 test_conn.close()
                 logger.debug(f"Found available Bluetooth (HC-xx) at {port.device}")
