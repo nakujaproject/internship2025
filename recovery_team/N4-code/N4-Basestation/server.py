@@ -530,18 +530,19 @@ def on_mqtt_message(client, userdata, msg):
             # Handle overrides in simulation mode locally; otherwise forward to serial
             handled = False
             upper = cmd.upper()
+            # Accept both legacy and new command names
             if SIMULATION_MODE:
                 from datetime import datetime as _dt
-                # Maintain sim override states
                 global SIM_DROGUE_ARMED, SIM_MAIN_ARMED, SIM_AUTO_FALLBACK, SIM_ARMED
-                if upper in ("ARM", "DISARM", "DROGUE_ARM", "DROGUE_DISARM", "MAIN_ARM", "MAIN_DISARM", "AUTO_ON", "AUTO_OFF"):
-                    if upper == "DROGUE_ARM":
+                # Accept ARM_DROGUE, DISARM_DROGUE, ARM_MAIN, DISARM_MAIN
+                if upper in ("ARM", "DISARM", "DROGUE_ARM", "DROGUE_DISARM", "MAIN_ARM", "MAIN_DISARM", "ARM_DROGUE", "DISARM_DROGUE", "ARM_MAIN", "DISARM_MAIN", "AUTO_ON", "AUTO_OFF"):
+                    if upper in ("DROGUE_ARM", "ARM_DROGUE"):
                         SIM_DROGUE_ARMED = 1
-                    elif upper == "DROGUE_DISARM":
+                    elif upper in ("DROGUE_DISARM", "DISARM_DROGUE"):
                         SIM_DROGUE_ARMED = 0
-                    elif upper == "MAIN_ARM":
+                    elif upper in ("MAIN_ARM", "ARM_MAIN"):
                         SIM_MAIN_ARMED = 1
-                    elif upper == "MAIN_DISARM":
+                    elif upper in ("MAIN_DISARM", "DISARM_MAIN"):
                         SIM_MAIN_ARMED = 0
                     elif upper == "ARM":
                         SIM_ARMED = 1
@@ -552,7 +553,6 @@ def on_mqtt_message(client, userdata, msg):
                     elif upper == "AUTO_OFF":
                         SIM_AUTO_FALLBACK = False
                     logger.info(f"🧪 [SIM] Override applied: drogue={SIM_DROGUE_ARMED}, main={SIM_MAIN_ARMED}, auto={SIM_AUTO_FALLBACK}")
-                    # Immediately publish one simulated line to update UI now
                     try:
                         csv_line = generate_sim_csv(0, time.time())
                         process_serial_data(csv_line)
@@ -560,7 +560,19 @@ def on_mqtt_message(client, userdata, msg):
                         pass
                     handled = True
             if not handled:
-                send_command(cmd, "MQTT")
+                # Map new commands to serial
+                serial_cmd = upper
+                # DROGUE
+                if upper in ("ARM_DROGUE", "DROGUE_ARM"):
+                    serial_cmd = "DROGUE_ON"
+                elif upper in ("DISARM_DROGUE", "DROGUE_DISARM"):
+                    serial_cmd = "DROGUE_OFF"
+                # MAIN
+                elif upper in ("ARM_MAIN", "MAIN_ARM"):
+                    serial_cmd = "MAIN_ON"
+                elif upper in ("DISARM_MAIN", "MAIN_DISARM"):
+                    serial_cmd = "MAIN_OFF"
+                send_command(serial_cmd, "MQTT")
             
         elif msg.topic == MQTT_TELEMETRY_TOPIC:
             payload = msg.payload.decode(errors='replace').strip()

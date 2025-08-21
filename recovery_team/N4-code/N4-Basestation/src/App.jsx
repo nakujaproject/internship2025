@@ -194,6 +194,18 @@ function App() {
       case "RESET":
         backendCommand = command.toUpperCase();
         break;
+        case "DROGUE_ARM":
+          backendCommand = "ARM_DROGUE";
+          break;
+        case "DROGUE_DISARM":
+          backendCommand = "DISARM_DROGUE";
+          break;
+        case "MAIN_ARM":
+          backendCommand = "ARM_MAIN";
+          break;
+        case "MAIN_DISARM":
+          backendCommand = "DISARM_MAIN";
+          break;
       case "MQTT":
         backendCommand = "CMD_MQTT_MODE";
         break;
