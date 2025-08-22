@@ -61,7 +61,7 @@ extern communication_status_t comm_status;
 #define DEBUG_TO_TERMINAL 1                 /*!< allow create task that print data to terminal. Set to 0 before flight  */
 // Simulation toggle: 1 = use internal simulated flight profile & GPS, 0 = use real sensors
 #ifndef USE_SIMULATION
-#define USE_SIMULATION 1
+#define USE_SIMULATION 0
 #endif
 
 #if DEBUGGING
@@ -90,8 +90,8 @@ extern communication_status_t comm_status;
 #define SET_RUN_MODE_PIN     13      /*!< Pin to set the flight computer to RUN mode */
 #define SD_CS_PIN           26
 #define REMOTE_SWITCH       27
-#define DROGUE_PIN           12     /*!< Pin to fire the drogue chute ejection charge */
-#define MAIN_CHUTE_EJECT_PIN 25     /*!< Pin to fire the main chute ejection charge */
+#define DROGUE_PIN           25     /*!< Pin to fire the drogue chute ejection charge */
+#define MAIN_CHUTE_EJECT_PIN 12     /*!< Pin to fire the main chute ejection charge */
 
 // Ejection timing (milliseconds)
 #define PYRO_CHARGE_TIME             5000   /*!< Time to keep drogue ejection pin HIGH (ms) */
@@ -156,7 +156,7 @@ namespace OPERATION_MODE {
 #ifndef MAC_ADDRESS_VALUES_DEFINED
 #define MAC_ADDRESS_VALUES_DEFINED
 static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC (placeholder)
-static const uint8_t BASE_MAC[6]   = {0xf4, 0x65, 0x0b, 0x48, 0x5c, 0xf8}; // Ground station / peer MAC (placeholder)
+static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC (placeholder)
 #endif
 
 // Externs for communication manager to restore WiFi/MQTT
@@ -206,4 +206,7 @@ const char MQTT_ARMING_TOPIC[30] = "n4/commands";             /* make this topic
 #define APOGEE_BIT 2
 
 #define STATE_CHANGE_DELAY 20
-#endif // DEFS_H
+#endif 
+
+
+// DEFS_H

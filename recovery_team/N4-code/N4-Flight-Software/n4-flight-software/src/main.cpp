@@ -107,7 +107,7 @@ ESPNowBeaconTransmitter transmitter(ROCKET_MAC, BASE_MAC);
 
 unsigned long mainPyroArmTime = 0;
 unsigned long droguePyroArmTime = 0;
-const unsigned long PYRO_ARM_DURATION = 10 * 1000; // 5 minutes
+const unsigned long PYRO_ARM_DURATION = 10 * 60 * 1000; // 5 minutes
 bool mainPyroArmed = false;
 bool droguePyroArmed = false;
 
@@ -118,56 +118,31 @@ void arm_pyros() {
 }
 
 void drogueChuteDeploy() {
-    static bool started = false;
-    static unsigned long start_ms = 0;
-    static uint8_t pwm_value = 0;
-
-    if (!started) {
-        // Map desired voltage to 8-bit PWM value (0-255)
-        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE;
-        if (ratio > 1.0f) ratio = 1.0f;
-        pwm_value = (uint8_t)(ratio * 255.0f);
-        analogWrite(DROGUE_PIN, pwm_value);
-        start_ms = millis();
-        started = true;
-        DROGUE_DEPLOY_FLAG = 1; // latch immediately for telemetry packet
-        debug("📦 DROGUE PWM START pwm="); debug(pwm_value); debugln("");
-    }
-    // Maintain PWM for at least PYRO_CHARGE_TIME; keep energized afterwards (indicator) per requirement
-    if (millis() - start_ms >= PYRO_CHARGE_TIME) {
-        // Optionally reduce holding power; keeping constant by spec (stay on)
-        // analogWrite(DROGUE_PIN, pwm_value/2); // uncomment if you want a reduced hold
-    }
+    // Simple PWM: set pin HIGH for charge time, then optionally LOW
+    //analogWrite(DROGUE_PIN, 255); // Full PWM
+    digitalWrite(DROGUE_PIN, HIGH);
+    DROGUE_DEPLOY_FLAG = 1;
+    debugln("📦 DROGUE DEPLOYED (PWM=255)");
+    //delay(PYRO_CHARGE_TIME); // Block for charge duration
+    // Optionally: analogWrite(DROGUE_PIN, 0); // Turn off after charge
 }
 
 void mainChuteDeploy() {
-    static bool started = false;
-    static unsigned long start_ms = 0;
-    static uint8_t pwm_value = 0;
-
-    if (!started) {
-        float ratio = PYRO_TARGET_VOLTAGE / PYRO_SUPPLY_VOLTAGE;
-        if (ratio > 1.0f) ratio = 1.0f;
-        pwm_value = (uint8_t)(ratio * 255.0f);
-        analogWrite(MAIN_CHUTE_EJECT_PIN, pwm_value);
-        start_ms = millis();
-        started = true;
-        MAIN_CHUTE_EJECT_FLAG = 1; // latch immediately
-        debug("📦 MAIN PWM START pwm="); debug(pwm_value); debugln("");
-    }
-    if (millis() - start_ms >= MAIN_DESCENT_PYRO_CHARGE_TIME) {
-        // Keep on (latched). Optionally reduce power later.
-        // analogWrite(MAIN_CHUTE_EJECT_PIN, pwm_value/2); // uncomment if you want a reduced hold
-    }
+   // analogWrite(MAIN_CHUTE_EJECT_PIN, 255); // Full PWM
+    digitalWrite(MAIN_CHUTE_EJECT_PIN, HIGH);
+    MAIN_CHUTE_EJECT_FLAG = 1;
+    debugln("📦 MAIN CHUTE DEPLOYED (PWM=255)");
+    //delay(MAIN_DESCENT_PYRO_CHARGE_TIME); // Block for charge duration
+    // Optionally: analogWrite(MAIN_CHUTE_EJECT_PIN, 0); // Turn off after charge
 }
 
 void chutesInit() {
     pinMode(DROGUE_PIN, OUTPUT);
     pinMode(MAIN_CHUTE_EJECT_PIN, OUTPUT);
     pinMode(REMOTE_SWITCH, OUTPUT); // remote switch to arm pyros
-    digitalWrite(DROGUE_PIN, LOW); // set drogue pin LOW
-    digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW); // set main chute pin LOW
-    digitalWrite(REMOTE_SWITCH, LOW); // set remote switch LOW
+    //digitalWrite(DROGUE_PIN, LOW); // set drogue pin LOW
+    //digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW); // set main chute pin LOW
+    //digitalWrite(REMOTE_SWITCH, LOW); // set remote switch LOW
 }
 
 /**
@@ -181,22 +156,25 @@ void disarm_pyros() {
 
 
 void armMainPyro() {
-    analogWrite(MAIN_CHUTE_EJECT_PIN, 255);
+    //analogWrite(MAIN_CHUTE_EJECT_PIN, 255);
     mainPyroArmTime = millis();
+    digitalWrite(MAIN_CHUTE_EJECT_PIN, HIGH);
     mainPyroArmed = true;
     MAIN_CHUTE_EJECT_FLAG = 1;
     debugln("MAIN PYRO ARMED");
 }
 
 void disarmMainPyro() {
-    analogWrite(MAIN_CHUTE_EJECT_PIN, 0);
+    //analogWrite(MAIN_CHUTE_EJECT_PIN, 0);
+    digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW);
     mainPyroArmed = false;
     MAIN_CHUTE_EJECT_FLAG = 0;
     debugln("MAIN PYRO DISARMED");
 }
 
 void armDroguePyro() {
-    analogWrite(DROGUE_PIN, 255);
+    //analogWrite(DROGUE_PIN, 255);
+    digitalWrite(DROGUE_PIN, HIGH);
     droguePyroArmTime = millis();
     droguePyroArmed = true;
     DROGUE_DEPLOY_FLAG = 1;
@@ -204,7 +182,8 @@ void armDroguePyro() {
 }
 
 void disarmDroguePyro() {
-    analogWrite(DROGUE_PIN, 0);
+    //analogWrite(DROGUE_PIN, 0);
+    digitalWrite(DROGUE_PIN, LOW);
     droguePyroArmed = false;
     DROGUE_DEPLOY_FLAG = 0;
     debugln("DROGUE PYRO DISARMED");
@@ -906,9 +885,26 @@ void readAltimeterTask(void* pvParameters) {
     static int phase = 0; // 0 ascent, 1 apogee hold, 2 descent
     static int count = 0;
     while(1) {
-        if (phase == 0) { a += 2.0; if(++count>=60){phase=1;count=0;} }
-        else if (phase == 1) { if(++count>=10){phase=2;count=0;} }
-        else if (phase == 2) { a -= 1.0; if(a<0){a=0; phase=0; count=0; vTaskDelay(3000/portTICK_PERIOD_MS);} }
+        if (phase == 0) {
+            // Ascent: 3600m in 15s, so 240m/s, update every 100ms (0.1s)
+            a += 24.0; // 24m per 0.1s = 240m/s
+            if(++count >= 150) { // 15s ascent
+                phase = 1;
+                count = 0;
+            }
+        }
+        else if (phase == 1) {
+            // Hold at apogee for 0.5s
+            if(++count >= 5) { // 0.5s hold
+                phase = 2;
+                count = 0;
+            }
+        }
+        else {
+            // Descent: 3600m to 0m in 14.5s, so ~248m/s
+            a -= 24.8; // 24.8m per 0.1s = 248m/s
+            if (a <= 0) a = 0;
+        }
         P = 101325 * exp(-a / 8434.5);
         estimatedAltitude = a;
         float filtered_alt = kalmanFilter(a);
@@ -919,7 +915,7 @@ void readAltimeterTask(void* pvParameters) {
         altimeter_packet.rel_altitude = a;
         altimeter_packet.kalman_altitude = AltitudeKalman;
         altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;
-        vTaskDelay(100 / portTICK_PERIOD_MS);
+        vTaskDelay(100 / portTICK_PERIOD_MS); // 0.1s per loop
     }
 }
 #else
@@ -1288,27 +1284,27 @@ void checkFlightState(void* pvParameters) {
         g_last_telemetry_update = millis();
 
         // 🚀 AUTOMATIC ARMING DISABLED - Only manual ARM commands will arm the system
-        // if (!is_system_armed && alt >= ARM_ALTITUDE_THRESHOLD) {
-        //     arm_pyros();
-        //     chutesInit();
-        //     if (use_beacon_mode) {
-        //         transmitter.setArmed(true);
-        //     }
-        //     is_system_armed = true;
-        //     operation_mode = OPERATION_MODE::ARMED_MODE;
-        //     blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
-        //     
-        //     debug("🚀 AUTO-ARMED at ");
-        //     debug(alt);
-        //     debug("m altitude (threshold: ");
-        //     debug(ARM_ALTITUDE_THRESHOLD);
-        //     debugln("m) ✓");
-        //     
-        //     char log_msg[100];
-        //     snprintf(log_msg, sizeof(log_msg), "AUTO-ARMED at %.1fm altitude\r\n", alt);
-        //     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-        //                            system_log_file, log_msg);
-        // }
+        if (!is_system_armed && alt >= ARM_ALTITUDE_THRESHOLD) {
+            arm_pyros();
+            chutesInit();
+            if (use_beacon_mode) {
+                transmitter.setArmed(true);
+            }
+            is_system_armed = true;
+            operation_mode = OPERATION_MODE::ARMED_MODE;
+            blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+            
+            debug("🚀 AUTO-ARMED at ");
+            debug(alt);
+            debug("m altitude (threshold: ");
+            debug(ARM_ALTITUDE_THRESHOLD);
+            debugln("m) ✓");
+            
+            char log_msg[100];
+            snprintf(log_msg, sizeof(log_msg), "AUTO-ARMED at %.1fm altitude\r\n", alt);
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                   system_log_file, log_msg);
+        }
 
         // --- Pre-apogee states ---
         if (!apogee_flag) {
@@ -1531,7 +1527,7 @@ void flightStateCallback(void* pvParameters) {
     static ARMED_FLIGHT_STATE last_state = ARMED_FLIGHT_STATE::PRE_FLIGHT_GROUND;
 
     while(1) {
-        // Check if state changed and handle communication mode locking
+    // Read drogue and main chute pin states using digitalRead
         if (current_state != last_state) {
             // Lock communication modes during active flight (powered flight through drogue descent)
             if (current_state == ARMED_FLIGHT_STATE::POWERED_FLIGHT) {

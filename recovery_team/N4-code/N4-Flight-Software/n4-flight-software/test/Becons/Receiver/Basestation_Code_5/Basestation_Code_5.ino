@@ -16,13 +16,10 @@ HardwareSerial BTSerial(2); // Use UART2 for HC-05/HC-06
 #define BT_RX 16 // ESP32 RX to HC-05 TX
 // HC-05 Name should be set via AT command: AT+NAME=N4_Base_BT
 
-
-
-uint8_t rocket_mac[] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Rocket MAC
-//uint8_t my_mac[] = {0x08, 0xd1, 0xf9, 0x15, 0xa2, 0x0c}; // Base MAC
-
-
-uint8_t my_mac[] = {0xf4, 0x65, 0x0b, 0x48, 0x5c, 0xf8}; // Base MAC
+// Configuration
+uint8_t rocket_mac[] =  {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Rocket MAC
+uint8_t my_mac[] = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Base MAC
+//10:06:1c:a6:11:f0
 //MAC: f4:65:0b:48:5c:f8
 bool rocketArmed = false;
 
@@ -254,7 +251,10 @@ void handleSerialCommands() {
     command.trim();
     command.toUpperCase();
 
-    if (command == "ARM" || command == "DISARM" || command == "RESET") {
+    if (command == "ARM" || command == "DISARM" || command == "RESET" ||
+        command == "MAIN_ON" || command == "MAIN_OFF" ||
+        command == "DROGUE_ON" || command == "DROGUE_OFF") {
+      
       lastCommand = command;
       commandPending = true;
       commandSentTime = millis();
@@ -292,7 +292,7 @@ void handleSerialCommands() {
     }
     else if (command == "HELP") {
       sendLogMessage("INFO", "Available commands:", "BaseStation");
-      sendLogMessage("INFO", "Flight: ARM, DISARM, RESET", "BaseStation");
+      sendLogMessage("INFO", "Flight: ARM, DISARM, RESET, MAIN_ON, MAIN_OFF, DROGUE_ON, DROGUE_OFF", "BaseStation");
       sendLogMessage("INFO", "Communication: MQTT, BEACON, AUTO_ON, AUTO_OFF, STATUS", "BaseStation");
     }
     else {
@@ -321,6 +321,18 @@ void sendCommandToRocket() {
   else if (lastCommand == "RESET") {
     result = esp_now_send(rocket_mac, (uint8_t*)"RESET", 5);
   }
+  else if (lastCommand == "MAIN_ON") {
+    result = esp_now_send(rocket_mac, (uint8_t*)"MAIN_ON", 7);
+  }
+  else if (lastCommand == "MAIN_OFF") {
+    result = esp_now_send(rocket_mac, (uint8_t*)"MAIN_OFF", 8);
+  }
+  else if (lastCommand == "DROGUE_ON") {
+    result = esp_now_send(rocket_mac, (uint8_t*)"DROGUE_ON", 9);
+  }
+  else if (lastCommand == "DROGUE_OFF") {
+    result = esp_now_send(rocket_mac, (uint8_t*)"DROGUE_OFF", 10);
+  }
   else if (lastCommand == "CMD_MQTT_MODE") {
     result = esp_now_send(rocket_mac, (uint8_t*)"CMD_MQTT_MODE", 13);
   }
@@ -348,7 +360,7 @@ void sendCommandToRocket() {
 
 void setup() {
   Serial.begin(115200);
-  BTSerial.begin(9600, SERIAL_8N1, BT_RX, BT_TX);
+  BTSerial.begin(115200, SERIAL_8N1, BT_RX, BT_TX);
   delay(1000);
 
   sendLogMessage("INFO", "🚀 N4 Base Station - Beacon Mode with Smart Commands", "BaseStation");
