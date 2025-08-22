@@ -45,11 +45,11 @@ PORT_8080 = 8080           # Port for development server (used by external tiles
 
 # === SERIAL PORT CONFIG ===
 # Optionally set COM port via environment variable (for HC-05 Bluetooth or any specific port)
-N4_COM_PORT = os.environ.get('N4_COM_PORT', 'COM13').strip()
+N4_COM_PORT = os.environ.get('N4_COM_PORT', 'COM12').strip()
 
 # === CONTROL & TEST FLAGS ===
 # USE_GUI_CONTROL: 1 = control via Tkinter GUI; 0 = control via React app (MQTT commands)
-USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '1'))
+USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '0'))
 # SIMULATION_MODE: 1 = simulate telemetry; 0 = use real serial
 SIMULATION_MODE = int(os.environ.get('N4_SIM', '0'))
 SIM_RATE_HZ = int(os.environ.get('N4_SIM_RATE', '20'))
@@ -790,12 +790,14 @@ def process_serial_data(line):
                 data['kalman_altitude'] = kalman_alt
                 data['kalman_vertical_velocity'] = kalman_vel
                 
-                # Flatten chute state for the app
+                # Flatten chute state for the app (support both drogue/main and pyro1/pyro2)
                 if isinstance(data.get('chute_state'), dict):
-                    data['pyroDrogue'] = data['chute_state'].get('drogue', 0)
-                    data['pyroMain'] = data['chute_state'].get('main', 0)
-                    data['pyro1_state'] = data['pyroDrogue']
-                    data['pyro2_state'] = data['pyroMain']
+                    chute = data['chute_state']
+                    # Prefer pyro1_state/pyro2_state if present, else fallback to drogue/main
+                    data['pyroDrogue'] = chute.get('pyro1_state', chute.get('drogue', 0))
+                    data['pyroMain'] = chute.get('pyro2_state', chute.get('main', 0))
+                    data['pyro1_state'] = chute.get('pyro1_state', chute.get('drogue', 0))
+                    data['pyro2_state'] = chute.get('pyro2_state', chute.get('main', 0))
 
                 # Normalize communication mode
                 data["communication_mode"] = data.get("communication_mode", "BEACON").upper()
