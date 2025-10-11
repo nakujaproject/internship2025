@@ -1283,28 +1283,28 @@ void checkFlightState(void* pvParameters) {
         g_current_telemetry = flight_data;
         g_last_telemetry_update = millis();
 
-        // 🚀 AUTOMATIC ARMING DISABLED - Only manual ARM commands will arm the system
-        if (!is_system_armed && alt >= ARM_ALTITUDE_THRESHOLD) {
-            arm_pyros();
-            chutesInit();
-            if (use_beacon_mode) {
-                transmitter.setArmed(true);
-            }
-            is_system_armed = true;
-            operation_mode = OPERATION_MODE::ARMED_MODE;
-            blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+        // // 🚀 AUTOMATIC ARMING DISABLED - Only manual ARM commands will arm the system
+        // if (!is_system_armed && alt >= ARM_ALTITUDE_THRESHOLD) {
+        //     arm_pyros();
+        //     chutesInit();
+        //     if (use_beacon_mode) {
+        //         transmitter.setArmed(true);
+        //     }
+        //     is_system_armed = true;
+        //     operation_mode = OPERATION_MODE::ARMED_MODE;
+        //     blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
             
-            debug("🚀 AUTO-ARMED at ");
-            debug(alt);
-            debug("m altitude (threshold: ");
-            debug(ARM_ALTITUDE_THRESHOLD);
-            debugln("m) ✓");
+        //     debug("🚀 AUTO-ARMED at ");
+        //     debug(alt);
+        //     debug("m altitude (threshold: ");
+        //     debug(ARM_ALTITUDE_THRESHOLD);
+        //     debugln("m) ✓");
             
-            char log_msg[100];
-            snprintf(log_msg, sizeof(log_msg), "AUTO-ARMED at %.1fm altitude\r\n", alt);
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, log_msg);
-        }
+        //     char log_msg[100];
+        //     snprintf(log_msg, sizeof(log_msg), "AUTO-ARMED at %.1fm altitude\r\n", alt);
+        //     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+        //                            system_log_file, log_msg);
+        // }
 
         // --- Pre-apogee states ---
         if (!apogee_flag) {
