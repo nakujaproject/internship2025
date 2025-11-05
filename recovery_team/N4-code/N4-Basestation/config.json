@@ -1,0 +1,22 @@
+{
+  "options": {
+    "paths": {
+      "root": ".",
+      "mbtiles": "C:/Users/admin/Downloads"
+    },
+    "serveAllFonts": true
+  },
+  "data": {
+    "kenya": {
+      "mbtiles": "osm-2020-02-10-v3.11_africa_kenya.mbtiles"
+    }
+  },
+  "styles": {
+    "basic-preview": {
+      "style": "https://demotiles.maplibre.org/style.json",
+      "tilejson": {
+        "tiles": ["mbtiles://kenya/{z}/{x}/{y}.pbf"]
+      }
+    }
+  }
+}

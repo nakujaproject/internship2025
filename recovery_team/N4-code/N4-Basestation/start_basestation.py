@@ -117,7 +117,7 @@ def start_basestation():
             kill_on_port(prt)
         time.sleep(1)
 
-        mbtiles = "osm-2020-02-10-v3.11_africa_kenya.mbtiles"
+        mbtiles = os.path.join(os.environ["USERPROFILE"], "Downloads", "osm-2020-02-10-v3.11_africa_kenya.mbtiles")
 
         # Ensure npm deps before starting JS processes
         _ensure_npm_deps()
