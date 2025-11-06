@@ -10,8 +10,7 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "map": "npx tileserver-gl --file ./osm-2020-02-10-v3.11_africa_kenya.mbtiles --port 8080"
-  },
+"map": "npx tileserver-gl --file C:\\Users\\admin\\Downloads\\osm-2020-02-10-v3.11_africa_kenya.mbtiles --port 8080"  },
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@robloche/chartjs-plugin-streaming": "^3.1.0",
