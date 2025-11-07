@@ -139,25 +139,26 @@ function Sidebar(props) {
     <aside className="sm:flex md:fixed md:block hidden box-border h-screen  md:w-1/4 mt-10 md:m-0">
       <div className="flex items-center h-full w-full overflow-auto max-h-screen flex-col p-2 border-r border-gray-400 text-base text-gray-800">
         <div className="space-y-4">
-          <div className="flex items-center justify-center">
-            <img
-              src={nakujaLogo}
-              alt="NAKUJA PROJECT Logo"
-              className="rounded-full w-10 h-10"
-            />
-            <h1 className="uppercase font-semibold px-2 text-base md:text-lg text-gray-700">
-              Nakuja - N4
-            </h1>
+                    <div className="flex items-left justify-left">
+                    <div className="flex flex-col items-center justify-center space-y-1">
+            {/* Logo with bold title */}
+            <div className="flex items-center space-x-2">
+              <img
+                src={nakujaLogo}
+                alt="NAKUJA PROJECT Logo"
+                className="rounded-full w-10 h-10"
+              />
+              <h1 className="uppercase font-bold text-lg md:text-xl text-gray-900">
+                Nakuja - N4
+              </h1>
+            </div>
+
+            {/* Subtitle below */}
+            <h2 className="text-sm md:text-base text-gray-600 text-center">
+              Rocket Configuration
+            </h2>
           </div>
-
-          <div className="border-b-2 border-gray-800 " />
-
-          <h2 className="text-md font-semibold text-center md:text-base text-wrap">
-            ROCKET CONFIGURATION
-          </h2>
-
-          <div className="border-b-2 border-gray-800 " />
-
+          </div>
           {/* Arming Section with Button */}
           <div className="min-h-16 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-800 relative">
             <div className="text-sm uppercase -mt-6  bg-white px-1 z-10 h-1/3">
@@ -174,7 +175,7 @@ function Sidebar(props) {
               <div>
                 <Button
                   onClick={props.onArmRocket}
-                  className={`px-2 py-1 rounded-full shadow-md border-2 border-box font-bold w-16 h-8 text-xs uppercase ${
+                  className={`px-2 py-1 rounded-md shadow-md border-2 border-box font-bold w-16 h-8 text-xs uppercase ${
                     !isArmed
                       ? "bg-rose-600 hover:bg-rose-700 text-gray-100"
                       : "bg-emerald-500 hover:bg-emerald-600 text-gray-100"
@@ -194,48 +195,59 @@ function Sidebar(props) {
             onSendCommand={(cmd) => handleCommandClick({ command: cmd.toLowerCase() })}
           />
 
-          <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-800 relative">
-            <div className="text-sm uppercase -mt-9 bg-white px-1 z-10 relative h-1/2">
-              Flight State
-            </div>
-            <div
-              ref={statusRef}
-              className={`text-base pt-1 h-1/2 uppercase ${textColor}`}
-            >
-              {rocketStatus}
-            </div>
-          </div>
+          <div className="flex space-x-4 w-full">
+  {/* Flight State Card */}
+  <div className="flex-1 p-3 rounded-2xl border-2 border-gray-800 bg-white shadow-sm flex flex-col items-center justify-center transition-transform duration-300 hover:scale-105">
+    <div className="text-sm uppercase bg-white px-2 -mt-5 font-semibold">
+      Flight State
+    </div>
+    <div
+      ref={statusRef}
+      className={`text-lg pt-1 font-bold uppercase ${textColor}`}
+    >
+      {rocketStatus}
+    </div>
+  </div>
 
-          <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-800 relative">
-            <div className="text-sm uppercase -mt-9 bg-white px-1 z-10 relative h-1/2">
-              Antenna
-            </div>
-            <div className="text-base pt-1 h-1/2 uppercase">{antenna}</div>
-          </div>
+  {/* Antenna Card */}
+  <div className="flex-1 p-3 rounded-2xl border-2 border-gray-800 bg-white shadow-sm flex flex-col items-center justify-center transition-transform duration-300 hover:scale-105">
+    <div className="text-sm uppercase bg-white px-2 -mt-5 font-semibold">
+      Antenna
+    </div>
+    <div className="text-lg pt-1 font-bold uppercase">{antenna}</div>
+  </div>
+</div>
 
-          <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-700 relative ">
-            <div className="text-base -mt-5 bg-white px-1 z-10 relative h-full">
-              RSSI
-            </div>
-            <div className="  text-base grid grid-cols-1 items-center justify-center -mt-2 h-full w-full text-gray-800">
-              <div className="px-1 grid grid-rows-3 items-center justify-center h-full w-full">
-                <div className=" h-1/3 ">{rssi} dBm</div>
-              </div>
-            </div>
-          </div>
 
-          <div className="min-h-14 h-14 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-700 relative ">
-            <div className="text-base -mt-5 bg-white px-1 z-10 relative h-full">
-              COMM MODE
-            </div>
-            <div className="text-base grid grid-cols-1 items-center justify-center -mt-2 h-full w-full text-gray-800">
-              <div className="px-1 grid grid-rows-3 items-center justify-center h-full w-full">
-                <div className={`h-1/3 font-bold ${props.communicationMode === 'Beacon' ? 'text-orange-600' : props.communicationMode === 'MQTT' ? 'text-green-600' : 'text-gray-500'}`}>
-                  {props.communicationMode}
-                </div>
-              </div>
-            </div>
-          </div>
+         <div className="flex space-x-4 w-full">
+  {/* RSSI Card */}
+  <div className="flex-1 p-3 rounded-2xl border-2 border-gray-700 bg-white shadow-sm flex flex-col items-center justify-center transition-transform duration-300 hover:scale-105">
+    <div className="text-sm uppercase bg-white px-2 -mt-5 font-semibold">
+      RSSI
+    </div>
+    <div className="text-lg font-bold text-gray-800 pt-1">
+      {rssi} dBm
+    </div>
+  </div>
+
+  {/* COMM MODE Card */}
+  <div className="flex-1 p-3 rounded-2xl border-2 border-gray-700 bg-white shadow-sm flex flex-col items-center justify-center transition-transform duration-300 hover:scale-105">
+    <div className="text-sm uppercase bg-white px-2 -mt-5 font-semibold">
+      COMM MODE
+    </div>
+    <div
+      className={`text-lg font-bold pt-1 ${
+        props.communicationMode === "Beacon"
+          ? "text-orange-600"
+          : props.communicationMode === "MQTT"
+          ? "text-green-600"
+          : "text-gray-500"
+      }`}
+    >
+      {props.communicationMode}
+    </div>
+  </div>
+</div>
 
           {/* Chute status section */}
           <div className="min-h-16 w-full p-2 rounded-2xl flex flex-col items-center justify-center font-semibold transition duration-300 ease-in-out border-2 border-gray-800 relative">
@@ -396,77 +408,78 @@ function Sidebar(props) {
           </div>
 
 
-          <div>
-            <div className="border-b-2"></div>
+         <div className="bg-white rounded-md shadow-sm border border-gray-200">
+  <div className="flex flex-row items-center justify-center py-2 px-3 bg-gray-50 border-b border-gray-200">
+    <h1 className="font-semibold text-gray-700 text-center pr-2 text-sm">MQTT CONNECTION</h1>
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      className="size-4 text-gray-500"
+    >
+      <path
+        fillRule="evenodd"
+        d="M13.78 10.47a.75.75 0 0 1 0 1.06l-2.25 2.25a.75.75 0 0 1-1.06 0l-2.25-2.25a.75.75 0 1 1 1.06-1.06l.97.97V5.75a.75.75 0 0 1 1.5 0v5.69l.97-.97a.75.75 0 0 1 1.06 0ZM2.22 5.53a.75.75 0 0 1 0-1.06l2.25-2.25a.75.75 0 0 1 1.06 0l2.25 2.25a.75.75 0 0 1-1.06 1.06l-.97-.97v5.69a.75.75 0 0 1-1.5 0V4.56l-.97.97a.75.75 0 0 1-1.06 0Z"
+        clipRule="evenodd"
+      />
+    </svg>
+  </div>
 
-            <div className="flex flex-row item-center justify-center py-2 border-b-2">
-              <h1 className="font-semibold  text-center pr-1">MQTT SETUP</h1>
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-                className="size-4 mt-1"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M13.78 10.47a.75.75 0 0 1 0 1.06l-2.25 2.25a.75.75 0 0 1-1.06 0l-2.25-2.25a.75.75 0 1 1 1.06-1.06l.97.97V5.75a.75.75 0 0 1 1.5 0v5.69l.97-.97a.75.75 0 0 1 1.06 0ZM2.22 5.53a.75.75 0 0 1 0-1.06l2.25-2.25a.75.75 0 0 1 1.06 0l2.25 2.25a.75.75 0 0 1-1.06 1.06l-.97-.97v5.69a.75.75 0 0 1-1.5 0V4.56l-.97.97a.75.75 0 0 1-1.06 0Z"
-                  clipRule="evenodd"
-                />
-              </svg>
-            </div>
-
-            <form onSubmit={handleConnect} className="grid grid-cols-2 pt-1">
-              <div className="mr-2">
-                <label htmlFor="host" className="font-bold ">
-                  Host
-                </label>
-                <input
-                  className="w-5/6 md:w-full bg-gray-300 block h-10 border-0  px-3 py-1  outline-none transition-all duration-200 ease-linear focus:placeholder:opacity-100 dark:text-white "
-                  type="text"
-                  id="host"
-                  value={host}
-                  onChange={handleHostChange}
-                  placeholder="192.168.x.x"
-                />
-              </div>
-              <div>
-                <label htmlFor="port" className="font-bold">
-                  Port
-                </label>
-                <input
-                  className="w-5/6 md:w-full bg-gray-300 block h-10 border-0 px-3 py-1  outline-none transition-all duration-200 ease-linear focus:placeholder:opacity-100 dark:text-white "
-                  type="text"
-                  id="port"
-                  value={port}
-                  onChange={handlePortChange}
-                  placeholder="xxxx"
-                />
-              </div>
-              <Button
-                type="submit"
-                className="flex flex-row h-10 items-center font-semibold  justify-center rounded-lg p-2 text-white hover:bg-blue-900 bg-blue-800 w-auto my-2 transition shadow-sm shadow-gray-700 hover:shadow-gray-800 uppercase"
-              >
-                Connect
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 16 16"
-                  fill="currentColor"
-                  className="size-4"
-                >
-                  <path
-                    fillRule="evenodd"
-                    d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z"
-                    clipRule="evenodd"
-                  />
-                  <path
-                    fillRule="evenodd"
-                    d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </Button>
-            </form>
-          </div>
+  <form onSubmit={handleConnect} className="p-3 space-y-3">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+      <div className="space-y-1">
+        <label htmlFor="host" className="font-medium text-gray-600 text-xs uppercase tracking-wide">
+          Host Address
+        </label>
+        <input
+          className="w-full bg-gray-50 border border-gray-300 rounded px-3 py-2 text-sm text-gray-800 outline-none transition-all duration-150 focus:ring-1 focus:ring-blue-400 focus:border-blue-400 focus:bg-white"
+          type="text"
+          id="host"
+          value={host}
+          onChange={handleHostChange}
+          placeholder="192.168.x.x"
+        />
+      </div>
+      <div className="space-y-1">
+        <label htmlFor="port" className="font-medium text-gray-600 text-xs uppercase tracking-wide">
+          Port
+        </label>
+        <input
+          className="w-full bg-gray-50 border border-gray-300 rounded px-3 py-2 text-sm text-gray-800 outline-none transition-all duration-150 focus:ring-1 focus:ring-blue-400 focus:border-blue-400 focus:bg-white"
+          type="text"
+          id="port"
+          value={port}
+          onChange={handlePortChange}
+          placeholder="xxxx"
+        />
+      </div>
+    </div>
+    
+    <Button
+      type="submit"
+      className="flex flex-row h-9 items-center font-medium justify-center rounded px-4 text-white hover:bg-blue-600 bg-blue-500 w-full md:w-auto transition-all duration-150 shadow-sm hover:shadow focus:ring-1 focus:ring-blue-400 focus:ring-offset-1 text-sm uppercase tracking-wide"
+    >
+      Establish Connection
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 16 16"
+        fill="currentColor"
+        className="size-3.5 ml-1.5"
+      >
+        <path
+          fillRule="evenodd"
+          d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z"
+          clipRule="evenodd"
+        />
+        <path
+          fillRule="evenodd"
+          d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z"
+          clipRule="evenodd"
+        />
+      </svg>
+    </Button>
+  </form>
+</div>
         </div>
       </div>
     </aside>
