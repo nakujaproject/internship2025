@@ -253,17 +253,17 @@ void DataLogger::loggerWrite(telemetry_type_t packet) {
     
     sprintf(pckt_buff,
                 "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f,%d,%.2f,%.2f\n",
-                telemetry_received_packet.record_number,    // 0
-                telemetry_received_packet.operation_mode,   // 1  
-                telemetry_received_packet.state,            // 2
-                telemetry_received_packet.acc_data.ax,      // 3
-                telemetry_received_packet.acc_data.ay,      // 4
-                telemetry_received_packet.acc_data.az,      // 5
-                telemetry_received_packet.acc_data.pitch,   // 6
-                telemetry_received_packet.acc_data.roll,    // 7
-                telemetry_received_packet.gyro_data.gx,     // 8
-                telemetry_received_packet.gyro_data.gy,     // 9
-                telemetry_received_packet.gyro_data.gz,     // 10
+                packet.record_number,    // 0
+                packet.operation_mode,   // 1  
+                packet.state,            // 2
+                packet.acc_data.ax,      // 3
+                packet.acc_data.ay,      // 4
+                packet.acc_data.az,      // 5
+                packet.acc_data.pitch,   // 6
+                packet.acc_data.roll,    // 7
+                packet.gyro_data.gx,     // 8
+                packet.gyro_data.gy,     // 9
+                packet.gyro_data.gz,     // 10
                 gps_packet.latitude,                        // 11
                 gps_packet.longitude,                       // 12
                 gps_packet.gps_altitude,                    // 13
@@ -272,10 +272,10 @@ void DataLogger::loggerWrite(telemetry_type_t packet) {
                 altimeter_packet.temperature,               // 16
                 altimeter_packet.rel_altitude,              // 17
                 altimeter_packet.velocity,                  // 18 - velocity
-                telemetry_received_packet.drogue_pin_state, // 19
-                telemetry_received_packet.main_chute_pin_state, // 20
-                telemetry_received_packet.battery_voltage,  // 21 - battery voltage
-                telemetry_received_packet.wifi_rssi,        // 22 - RSSI from telemetry packet
+                packet.drogue_pin_state, // 19
+                packet.main_chute_pin_state, // 20
+                packet.battery_voltage,  // 21 - battery voltage
+                packet.wifi_rssi,        // 22 - RSSI from telemetry packet
                 altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
                 altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
             ); 

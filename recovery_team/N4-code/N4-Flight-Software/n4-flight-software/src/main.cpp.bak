@@ -248,7 +248,6 @@ float AltitudeKalman = 0.0, VelocityVerticalKalman = 0.0;
 uint8_t mqtt_connect_flag;
 
 /* hardware init check - to pinpoint any hardware failure during setup */
-#define BMP_CHECK_BIT           0
 #define IMU_CHECK_BIT           1   
 #define FLASH_CHECK_BIT         2
 #define GPS_CHECK_BIT           3
@@ -757,11 +756,11 @@ void blocking_buzz(uint16_t interval) {
  */
 QueueHandle_t telemetry_data_queue_handle;
 QueueHandle_t log_to_mem_queue_handle;
+QueueHandle_t csv_log_queue_handle;  // 🔥 NEW: CSV string logging queue
 QueueHandle_t check_state_queue_handle;
 QueueHandle_t debug_to_term_queue_handle;
 QueueHandle_t kalman_filter_queue_handle;
 QueueHandle_t kalman2d_input_queue_handle;
-
 
 
 //////////////////////////////////////////////////////////////////////////////////////////////
@@ -815,20 +814,28 @@ void readAccelerationTask(void* pvParameter) {
         g_current_telemetry = acc_data_lcl;
         g_last_telemetry_update = millis();
         
-            // Send to queues for other tasks
-            // Note: logging to SD/Flash is centralized in `logToMemory` and should be
-            // produced only by the Kalman task to avoid duplicate records.
-    if (check_state_queue_handle != NULL) xQueueSend(check_state_queue_handle, &acc_data_lcl, pdMS_TO_TICKS(10)); // FIX
+        // Send to queues for other tasks
+        // FIX: Use blocking send with timeout for producers (avoid silent drops)
+        xQueueSend(log_to_mem_queue_handle, &acc_data_lcl, pdMS_TO_TICKS(10)); // FIX
+        xQueueSend(check_state_queue_handle, &acc_data_lcl, pdMS_TO_TICKS(10)); // FIX
 
-        // FIX: Provide latest-only accel+telemetry to Kalman task (overwrite queue of length 1)
+        // FIX: Provide latest-only acceleration/telemetry to Kalman via overwrite (queue length = 1)
         if (kalman_filter_queue_handle != NULL) {
-            xQueueOverwrite(kalman_filter_queue_handle, &acc_data_lcl); // FIX: latest only
+            xQueueOverwrite(kalman_filter_queue_handle, &acc_data_lcl); // FIX: latest-only
         }
 
-        // NOTE: MQTT/debug terminal telemetry should be emitted by taskKalman2D (authoritative, one-per-update)
+        // NOTE: debug and direct telemetry to MQTT should be produced by taskKalman2D to ensure one telemetry/event per Kalman update
 
-        // Task delay -> align with IMU sampling (20 ms)
-        vTaskDelay(pdMS_TO_TICKS(20)); // FIX: use pdMS_TO_TICKS
+        //MQTT transmission (if enabled) - only send to queue when armed or in test mode
+        if (MQTT) {
+            // 🔥 ENHANCED DATA CONTINUITY - Always queue data for MQTT task when MQTT mode is active
+            if (comm_manager.isMQTTActive()) {
+                // Send to MQTT task queue for processing (arm check handled in MQTT task)
+                xQueueSend(telemetry_data_queue_handle, &acc_data_lcl, 0);
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(20)); // FIX: use pdMS_TO_TICKS for clarity
     }
 
 }
@@ -906,13 +913,13 @@ void readAltimeterTask(void* pvParameters) {
         estimatedAltitude = a;
         float filtered_alt = kalmanFilter(a);
         altimeter_packet.filtered_altitude_1d = filtered_alt;
-    // FIX: latest-only altitude input for Kalman -> overwrite (queue length = 1)
-    if (kalman2d_input_queue_handle != NULL) xQueueOverwrite(kalman2d_input_queue_handle, &filtered_alt); // FIX
         altimeter_packet.temperature = 25.0;
         altimeter_packet.pressure = P;
         altimeter_packet.rel_altitude = a;
         altimeter_packet.kalman_altitude = AltitudeKalman;
         altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;
+        // FIX: Kalman input queue is latest-only -> overwrite so the Kalman task always sees newest measurement
+        xQueueOverwrite(kalman2d_input_queue_handle, &filtered_alt); // FIX
         vTaskDelay(pdMS_TO_TICKS(100)); // 0.1s per loop - FIX: use pdMS_TO_TICKS
     }
 }
@@ -926,13 +933,13 @@ void readAltimeterTask(void* pvParameters) {
         estimatedAltitude = a;
         float filtered_alt = kalmanFilter(a);
         altimeter_packet.filtered_altitude_1d = filtered_alt;
-    // FIX: latest-only altitude input for Kalman -> overwrite (queue length = 1)
-    if (kalman2d_input_queue_handle != NULL) xQueueOverwrite(kalman2d_input_queue_handle, &filtered_alt); // FIX
         altimeter_packet.temperature = altimeter_temperature;
         altimeter_packet.pressure = P;
         altimeter_packet.rel_altitude = a;
         altimeter_packet.kalman_altitude = AltitudeKalman;
         altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;
+        // FIX: Kalman input queue is latest-only -> overwrite so the Kalman task always sees newest measurement
+        xQueueOverwrite(kalman2d_input_queue_handle, &filtered_alt); // FIX
         vTaskDelay(pdMS_TO_TICKS(50)); // FIX: use pdMS_TO_TICKS
     }
 }
@@ -1006,16 +1013,45 @@ float measurementVariance_bmp = 0.1;
 float kalmanGain_bmp;
 
 
-  void init_kalman_matrices() {
-  F = {1, 0.0034, 0, 1};
-  G = {0.5 * 0.003 * 0.003, 0.003};
-  H = {1, 0};
-  I = {1, 0, 0, 1};
-  Q = G * ~G * 4.0f * 4.0f;
-  R = {0.3 * 0.3};
-  P = {0, 0, 0, 0};
-  S = {0, 0};
-  }
+//   void init_kalman_matrices() {
+//   F = {1, 0.0034, 0, 1};
+//   G = {0.5 * 0.003 * 0.003, 0.003};
+//   H = {1, 0};
+//   I = {1, 0, 0, 1};
+//   Q = G * ~G * 4.0f * 4.0f;
+//   R = {0.3 * 0.3};
+//   P = {0, 0, 0, 0};
+//   S = {0, 0};
+//   }
+
+void init_kalman_matrices() {
+  const float dt = timeStep; // 0.003f
+  F = {1.0f, dt, 0.0f, 1.0f};
+  G = {0.5f * dt * dt, dt}; // column
+  H = {1.0f, 0.0f};         // measure altitude only
+  I = {1.0f, 0.0f, 0.0f, 1.0f};
+
+    // Sensor noise estimates (example starting values — measure these in-stationary)
+    //   const float sigma_acc = 0.2f;     // m/s^2 (tune from imu)
+    //   const float sigma_alt = 0.3f;     // m (tune from altimeter)
+    // Sensor noise estimates (starting values you can tune later)
+  const float sigma_acc = 0.04f;   // m/s^2 (MPU6050, reasonable starting RMS)
+  const float sigma_alt = 0.5f;    // m (BMP180, conservative starting RMS)
+
+
+  // Process noise for acceleration integrated into states
+  Q = G * ~G * (sigma_acc * sigma_acc);
+
+  // Measurement noise (altimeter)
+  R = {sigma_alt * sigma_alt};
+
+  // Initial state covariance - not zero
+  P = {1.0f, 0.0f, 0.0f, 1.0f};
+
+  // initial state (position, velocity)
+  S = {0.0f, 0.0f};
+}
+
 // Apply Kalman filter to new altitude measurements
 float kalmanFilter(float z) {
   float estimatedAltitude_pred = estimatedAltitude;
@@ -1110,10 +1146,10 @@ void taskKalman2D(void *pvParameters) {
     telemetry_type_t acc_data_lcl; // For acceleration data access
     
     while (true) {
-        // Wait for filtered altitude data from the readAltimeterTask
+        // Wait for filtered altitude data from the readAltimeterTask (blocking)
         if (xQueueReceive(kalman2d_input_queue_handle, &input_altitude, portMAX_DELAY) == pdTRUE) {
-            // We need acceleration data for the 2D Kalman filter
-            // Read the latest acceleration telemetry from kalman_filter_queue_handle (latest-only)
+            // We need latest acceleration telemetry for the 2D Kalman filter
+            // FIX: read (peek) the latest accel/telemetry from kalman_filter_queue_handle (latest-only queue)
             if (kalman_filter_queue_handle != NULL && xQueuePeek(kalman_filter_queue_handle, &acc_data_lcl, 0) == pdTRUE) {
                 float offset = 9.425; // Adjust this offset based on your calibration
                 float AccYInertial = (acc_data_lcl.acc_data.az * 9.8) - offset;
@@ -1166,11 +1202,12 @@ void taskKalman2D(void *pvParameters) {
             altimeter_packet.kalman_altitude = AltitudeKalman;
             altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;
 
-            // Build a single telemetry packet per Kalman update and send to downstream queues
+            // Build unified telemetry packet once per Kalman update and publish to downstream queues
             telemetry_type_t telemetry_out;
-            telemetry_out.alt_data = altimeter_packet; // includes filtered values
-            telemetry_out.acc_data = acc_data_lcl.acc_data;
-            telemetry_out.gyro_data = acc_data_lcl.gyro_data;
+            // Fill core fields
+            telemetry_out.alt_data = altimeter_packet; // include latest altimeter + Kalman outputs
+            telemetry_out.acc_data = acc_data_lcl.acc_data; // copy accel data (if any)
+            telemetry_out.gyro_data = acc_data_lcl.gyro_data; // copy gyro data (if any)
             telemetry_out.gps_data = gps_packet;
             telemetry_out.operation_mode = operation_mode;
             telemetry_out.state = current_state;
@@ -1178,16 +1215,25 @@ void taskKalman2D(void *pvParameters) {
             telemetry_out.main_chute_pin_state = main_chute_pin_state;
             telemetry_out.battery_voltage = battery_voltage;
             telemetry_out.wifi_rssi = wifi_rssi;
+            // record number - increment locally to mark telemetry rows
             static uint32_t kalman_record_counter = 0;
             telemetry_out.record_number = ++kalman_record_counter;
 
-            // Send the telemetry exactly once per Kalman update to consumers
-            if (debug_to_term_queue_handle != NULL) xQueueSend(debug_to_term_queue_handle, &telemetry_out, pdMS_TO_TICKS(10)); // FIX
-            if (log_to_mem_queue_handle != NULL) xQueueSend(log_to_mem_queue_handle, &telemetry_out, 0); // FIX: non-blocking enqueue to unified log queue
-            if (telemetry_data_queue_handle != NULL) xQueueSend(telemetry_data_queue_handle, &telemetry_out, pdMS_TO_TICKS(10)); // FIX
+            // FIX: Send exactly once per Kalman update to consumer queues. Use blocking send with short timeout.
+            if (debug_to_term_queue_handle != NULL) {
+                xQueueSend(debug_to_term_queue_handle, &telemetry_out, pdMS_TO_TICKS(10)); // consumer will block on receive
+            }
+            if (log_to_mem_queue_handle != NULL) {
+                xQueueSend(log_to_mem_queue_handle, &telemetry_out, pdMS_TO_TICKS(10));
+            }
+            if (telemetry_data_queue_handle != NULL) {
+                // Send to MQTT telemetry queue (if enabled). Kalman is authoritative source for telemetry.
+                xQueueSend(telemetry_data_queue_handle, &telemetry_out, pdMS_TO_TICKS(10));
+            }
 
         }
 
+        // Keep Kalman task scheduling consistent with its intended timestep
         vTaskDelay(pdMS_TO_TICKS((uint32_t)(timeStep * 1000))); // FIX: use pdMS_TO_TICKS
     }
 }
@@ -1498,7 +1544,7 @@ void checkFlightState(void* pvParameters) {
         }
 
         flight_data.state = current_state;
-        vTaskDelay(pdMS_TO_TICKS(STATE_CHANGE_DELAY)); // FIX: use pdMS_TO_TICKS
+        vTaskDelay(STATE_CHANGE_DELAY / portTICK_PERIOD_MS);
     }
 }
 
@@ -1530,7 +1576,7 @@ void monitorChutePinsTask(void* pvParameters) {
             wifi_rssi = 0; // Flight computer sends 0, base station captures real beacon signal strength
         }
         
-        vTaskDelay(pdMS_TO_TICKS(50)); // FIX: use pdMS_TO_TICKS
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
@@ -1644,7 +1690,7 @@ void flightStateCallback(void* pvParameters) {
 
         }
         
-        vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY)); // FIX: use pdMS_TO_TICKS
+        vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY));
     }
 }
 
@@ -1659,14 +1705,15 @@ void debugToTerminalTask(void* pvParameters){
     telemetry_type_t telemetry_received_packet; // acceleration received from acceleration_queue
 
     while(true){
-        // get telemetry data - block until a telemetry packet is available to avoid stale/duplicate prints
-        if (debug_to_term_queue_handle != NULL) {
-            xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, portMAX_DELAY); // FIX: block for fresh telemetry
-        } else {
-            // If queue not configured, yield briefly
-            vTaskDelay(pdMS_TO_TICKS(10));
+        // get telemetry data
+        //xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, 0);
+        // new — BLOCK until telemetry arrives (1:1 producer->consumer processing)
+        if (xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, portMAX_DELAY) != pdTRUE) {
+            // if we ever time out or fail (shouldn't with portMAX_DELAY), skip this cycle
+            vTaskDelay(pdMS_TO_TICKS(1));
             continue;
         }
+
         
         // Create unified 25-field CSV format with Kalman filter outputs
         sprintf(telemetry_packet_buffer,
@@ -1701,8 +1748,25 @@ void debugToTerminalTask(void* pvParameters){
         // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
         updateGlobalTelemetryBuffer(telemetry_packet_buffer);
 
-        // Logging is centralized in `logToMemory` task. This task only updates
-        // the global telemetry buffer and handles terminal/beacon output.
+        // SD: Log same CSV line (identical to beacon/MQTT) if SD initialized
+        if (sdLogger.initialized()) {
+            sdLogger.logRawCSV(telemetry_packet_buffer);
+        }
+        
+        // 🔥 QUEUE CSV DATA FOR LOGGING - Send formatted CSV to logger queue
+        if (csv_log_queue_handle != NULL) {
+            // Create a copy of the CSV string for the queue (max 256 chars)
+            char csv_copy[256];
+            strncpy(csv_copy, telemetry_packet_buffer, sizeof(csv_copy) - 1);
+            csv_copy[sizeof(csv_copy) - 1] = '\0';
+            
+            // Send to CSV logging queue (non-blocking to avoid task delays)
+            if (xQueueSend(csv_log_queue_handle, csv_copy, 0) == pdTRUE) {
+                Serial.println("✅ CSV data queued for logging");
+            } else {
+                Serial.println("❌ CSV queue full - data dropped");
+            }
+        }
         
         // Only transmit via beacon if beacon mode is active and MQTT mode is NOT
         bool beacon_success = false;
@@ -1723,7 +1787,7 @@ void debugToTerminalTask(void* pvParameters){
         // Update communication manager with beacon transmission status
         comm_manager.updateTransmissionStatus(false, beacon_success);
         
-        vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY)); // FIX: use pdMS_TO_TICKS
+        vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY));
     }
 }
 
@@ -1756,36 +1820,80 @@ void debugToTerminalTask(void* pvParameters){
 // }
 void logToMemory(void* pvParameter) {
     telemetry_type_t received_packet;
+    char csv_data[256];  // Buffer for CSV string data
 
     while (1) {
-        // Block until a telemetry packet is available. This task is the
-        // single writer to both Flash and SD to avoid concurrent SPI access.
-        if (xQueueReceive(log_to_mem_queue_handle, &received_packet, portMAX_DELAY) == pdTRUE) {
-            // Log every received telemetry packet (one-per-reading cycle from Kalman)
+        bool data_received = false;
+        
+        // 🔥 PRIORITY 1: Check for CSV string data (optimized logging)
+    if (xQueueReceive(csv_log_queue_handle, csv_data, pdMS_TO_TICKS(10)) == pdTRUE) { // FIX: block briefly for CSV data
             current_log_time = millis();
-            previous_log_time = current_log_time;
+            
+            if (current_log_time - previous_log_time > log_sample_interval) {
+                previous_log_time = current_log_time;
+                
+                #if ENABLE_FLASH_LOGGING
+                // 🛡️ MEMORY PROTECTION: Add safety checks before flash operations
+                Serial.println("📝 Processing CSV data for flash logging...");
+                
+                // Verify CSV data integrity
+                if (strlen(csv_data) > 0 && strlen(csv_data) < 256) {
+                    disableAllDevices();
+                    digitalWrite(flash_cs_pin, LOW);
+                    
+                    // Add small delay for flash chip select stabilization
+                    delayMicroseconds(10);
+                    
+                    data_logger.loggerWriteCSV(csv_data);
+                    
+                    // Add small delay before releasing chip select
+                    delayMicroseconds(10);
+                    digitalWrite(flash_cs_pin, HIGH);
+                } else {
+                    Serial.println("❌ [CSV LOG] Invalid CSV data - skipping flash write");
+                }
+                #endif
+                
+                // Log to SD Card using the existing telemetry_type_t method
+                // Note: We still use the traditional method for SD card for compatibility
+                // The CSV logging is primarily for high-speed flash memory logging
+            }
+            
+            data_received = true;
+        }
+        
+        // 🔥 PRIORITY 2: Check for traditional telemetry packet data (fallback)
+    if (!data_received && xQueueReceive(log_to_mem_queue_handle, &received_packet, pdMS_TO_TICKS(10)) == pdTRUE) { // FIX: block briefly for telemetry packets
+            current_log_time = millis();
 
-            #if ENABLE_FLASH_LOGGING
-                // Write to Flash (compile-time controlled)
+            if (current_log_time - previous_log_time > log_sample_interval) {
+                previous_log_time = current_log_time;
+
+                #if ENABLE_FLASH_LOGGING
+                //  Log to Flash Memory (controlled by flag to prevent performance issues)
                 disableAllDevices();
                 digitalWrite(flash_cs_pin, LOW);
                 data_logger.loggerWrite(received_packet);
                 digitalWrite(flash_cs_pin, HIGH);
-            #endif
+                #endif
 
-            #if ENABLE_SD_LOGGING
-                // Write to SD if available
-                if (sdLogger.initialized()) {
-                    disableAllDevices();
-                    digitalWrite(SD_CS_PIN, LOW);
-                    sdLogger.log(received_packet, gps_packet);
-                    digitalWrite(SD_CS_PIN, HIGH);
-                }
-            #endif
+                //  Log to SD Card (always enabled for primary data backup)
+                disableAllDevices();
+                digitalWrite(SD_CS_PIN, LOW);
+                sdLogger.log(received_packet, gps_packet);
+                digitalWrite(SD_CS_PIN, HIGH);
+            }
+            
+            data_received = true;
         }
-
-        // Small yield to keep system responsive
-        vTaskDelay(pdMS_TO_TICKS(1));
+        
+        // If no data was received, yield to other tasks
+        if (!data_received) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        } else {
+            // Yield to other tasks to prevent blocking beacon transmission
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
     }
 }
 
@@ -1800,6 +1908,7 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
     telemetry_type_t telemetry_received_packet;
 
     while(1) {
+        // Block until Kalman-produced telemetry is available (authoritative)
         xQueueReceive(telemetry_data_queue_handle, &telemetry_received_packet, portMAX_DELAY);
 
         // Create comprehensive 25-field CSV string for MQTT transmission with Kalman filter data
@@ -1831,9 +1940,12 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
                 altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
                 altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
                 );
+
         // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
         updateGlobalTelemetryBuffer(telemetry_packet_buffer);
-        // Persisting to SD/Flash is handled by the centralized `logToMemory` task.
+        if (sdLogger.initialized()) {
+            sdLogger.logRawCSV(telemetry_packet_buffer);
+        }
 
         // 🔥 ISOLATED MQTT TRANSMISSION - Only transmit via MQTT when MQTT mode is active
         bool mqtt_success = false;
@@ -1867,7 +1979,7 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
         // Update communication manager with MQTT transmission status
         comm_manager.updateTransmissionStatus(mqtt_success, false);
 
-        vTaskDelay(CONSUME_TASK_DELAY/ portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY));
     }
 }
 
@@ -2388,13 +2500,13 @@ void setup() {
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "==CREATING QUEUES==\r\n");
 
     /* Every producer task sends queue to a different queue to avoid data popping issue */
-    // FIX: explicit queue lengths tuned for telemetry flow
-    telemetry_data_queue_handle = xQueueCreate(4, sizeof(telemetry_type_t));           // MQTT queue (small buffer)
-    log_to_mem_queue_handle = xQueueCreate(8, sizeof(telemetry_type_t));               // FIX: larger queue for slower flash/SD I/O
-    check_state_queue_handle = xQueueCreate(4, sizeof(telemetry_type_t));             // state machine queue
-    debug_to_term_queue_handle = xQueueCreate(2, sizeof(telemetry_type_t));           // terminal output (can be small)
-    kalman_filter_queue_handle = xQueueCreate(1, sizeof(telemetry_type_t));           // FIX: latest-only (overwrite) for accel -> Kalman
-    kalman2d_input_queue_handle = xQueueCreate(1, sizeof(float));                     // FIX: latest-only for altitude input to Kalman
+    telemetry_data_queue_handle = xQueueCreate(TELEMETRY_DATA_QUEUE_LENGTH, sizeof(telemetry_type_t));
+    log_to_mem_queue_handle = xQueueCreate(LOG_TO_MEM_QUEUE_LENGTH, sizeof(telemetry_type_t));  // Use large queue for flash logging
+    csv_log_queue_handle = xQueueCreate(LOG_TO_MEM_QUEUE_LENGTH, 256);  // 🔥 NEW: CSV string queue (256 char strings)
+    check_state_queue_handle = xQueueCreate(TELEMETRY_DATA_QUEUE_LENGTH, sizeof(telemetry_type_t));
+    debug_to_term_queue_handle = xQueueCreate(TELEMETRY_DATA_QUEUE_LENGTH, sizeof(telemetry_type_t));
+    kalman_filter_queue_handle = xQueueCreate(TELEMETRY_DATA_QUEUE_LENGTH, sizeof(telemetry_type_t));
+    kalman2d_input_queue_handle = xQueueCreate(TELEMETRY_DATA_QUEUE_LENGTH, sizeof(float));
 
     if(telemetry_data_queue_handle == NULL) {
         debugln("[-]telemetry_data_queue_handle creation failed");
@@ -2412,7 +2524,14 @@ void setup() {
         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]telemetry_data_queue_handle creation OK.\r\n");
     }
 
-    // CSV queue removed — logging centralized to `logToMemory` task
+    // 🔥 CSV LOGGING QUEUE ERROR CHECK
+    if(csv_log_queue_handle == NULL) {
+        debugln("[-]csv_log_queue_handle creation failed");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[-]csv_log_queue_handle creation failed\r\n");
+    } else {
+        debugln("[+]csv_log_queue_handle creation OK.");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]csv_log_queue_handle creation OK.\r\n");
+    }
 
     if(check_state_queue_handle == NULL) {
         debugln("[-]check_state_queue_handle creation failed");

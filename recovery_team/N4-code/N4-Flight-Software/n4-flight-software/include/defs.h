@@ -59,6 +59,13 @@ extern communication_status_t comm_status;
 #define DEBUGGING 1                           /*!< allow debugging to terminal. Set to 0 pre flight to disable serial terminal printing and improve speed  */
 #define LOG_TO_MEMORY 0                      /*!< allow data logging to memory. Set to 1 to log data to external flash memory. Must be set during flight */
 #define DEBUG_TO_TERMINAL 1                 /*!< allow create task that print data to terminal. Set to 0 before flight  */
+// Compile-time enables for storage backends. Set to 0 to disable at compile time.
+#ifndef ENABLE_FLASH_LOGGING
+#define ENABLE_FLASH_LOGGING 1  /* 1 = enable external flash logging */
+#endif
+#ifndef ENABLE_SD_LOGGING
+#define ENABLE_SD_LOGGING 1     /* 1 = enable SD card logging */
+#endif
 // Simulation toggle: 1 = use internal simulated flight profile & GPS, 0 = use real sensors
 #ifndef USE_SIMULATION
 #define USE_SIMULATION 0
