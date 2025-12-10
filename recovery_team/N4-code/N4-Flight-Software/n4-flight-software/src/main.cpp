@@ -143,7 +143,7 @@ bool mainActive = false;
 
 // Parse PWM configuration from JSON string with durations
 bool parsePWMConfig(const char* jsonStr, PWMConfig& config) {
-    StaticJsonDocument<256> doc;
+    JsonDocument doc;
     DeserializationError error = deserializeJson(doc, jsonStr);
     
     if (error) {
@@ -205,13 +205,6 @@ void applyPWMConfig(const PWMConfig& config) {
     debug("V (");
     debug(mainPWMDuration);
     debugln("ms)");
-    
-    char log_msg[200];
-    snprintf(log_msg, sizeof(log_msg), 
-             "PWM Config: Vcc=%.1fV, Drogue=%.1fV (%lums), Main=%.1fV (%lums)\r\n",
-             Vcc, desiredDrogueV, droguePWMDuration, desiredMainV, mainPWMDuration);
-    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                           system_log_file, log_msg);
 }
 
 // Compute PWM duty from desired voltage (0..255)

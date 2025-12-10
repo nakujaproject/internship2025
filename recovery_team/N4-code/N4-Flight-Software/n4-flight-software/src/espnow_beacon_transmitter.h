@@ -4,8 +4,8 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include "esp_wifi.h"
+#include "data_types.h"  // Use MAX_COMMAND_LENGTH from data_types.h
 
-#define MAX_COMMAND_LENGTH 200  // Increased for JSON config commands
 #define MAX_BEACON_SIZE 256
 
 

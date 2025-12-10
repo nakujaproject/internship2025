@@ -8,7 +8,7 @@
 
 #include <Arduino.h>
 
-#define MAX_COMMAND_LENGTH 20
+#define MAX_COMMAND_LENGTH 200  // Increased for JSON PWM config commands
 #define MAX_BEACON_SIZE 256
 
 struct CommandPacket {
