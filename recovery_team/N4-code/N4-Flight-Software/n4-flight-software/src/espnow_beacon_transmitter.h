@@ -5,7 +5,7 @@
 #include <esp_now.h>
 #include "esp_wifi.h"
 
-#define MAX_COMMAND_LENGTH 20
+#define MAX_COMMAND_LENGTH 200  // Increased for JSON config commands
 #define MAX_BEACON_SIZE 256
 
 
@@ -19,6 +19,7 @@ public:
     };
     bool isArmed() const { return armed; }
     void setArmed(bool state) { armed = state; } 
+    const uint8_t* getBaseMAC() const { return baseMAC; }
 
 
     ESPNowBeaconTransmitter(const uint8_t* rocket_mac, const uint8_t* base_mac);

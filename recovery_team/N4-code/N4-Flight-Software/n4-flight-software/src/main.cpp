@@ -23,6 +23,7 @@
 #include <SD.h>             // SD card logging function
 #include <SPIFFS.h>         // SPIFFS file system function
 #include <esp_task_wdt.h>   // Watchdog timer functions
+#include <ArduinoJson.h>    // JSON parsing for PWM configuration
 #include "defs.h"           // misc defines
 #include "mpu.h"            // for reading MPU6050
 #include "CustomSerialFlash.h"    // Handling external SPI flash memory
@@ -116,16 +117,102 @@ bool droguePyroArmed = false;
 ESP32PWM droguePWM;
 ESP32PWM mainPWM;
 
-// User-specified voltages
+// User-specified voltages and durations (configurable via ESP-NOW JSON commands)
 float Vcc = 17.8f;             // input battery voltage
 float desiredDrogueV = 3.0f;   // desired output voltage at drogue pin
 float desiredMainV   = 10.0f;  // desired output voltage at main pin
+
+// Configurable PWM on-durations (milliseconds)
+unsigned long droguePWMDuration = 5000;  // Default 5 seconds
+unsigned long mainPWMDuration = 5000;    // Default 5 seconds
+
+// PWM Configuration structure for JSON commands with durations
+struct PWMConfig {
+    float vcc;
+    float drogue_voltage;
+    float main_voltage;
+    unsigned long drogue_duration_ms;  // Duration in milliseconds
+    unsigned long main_duration_ms;    // Duration in milliseconds
+};
 
 // Timing-based auto-shutdown variables
 unsigned long drogueStartTime = 0;
 unsigned long mainStartTime = 0;
 bool drogueActive = false;
 bool mainActive = false;
+
+// Parse PWM configuration from JSON string with durations
+bool parsePWMConfig(const char* jsonStr, PWMConfig& config) {
+    StaticJsonDocument<256> doc;
+    DeserializationError error = deserializeJson(doc, jsonStr);
+    
+    if (error) {
+        debug("❌ JSON parse error: ");
+        debugln(error.c_str());
+        return false;
+    }
+    
+    // Extract values with defaults (preserve existing values if not specified)
+    config.vcc = doc["vcc"] | Vcc;
+    config.drogue_voltage = doc["drogue_v"] | desiredDrogueV;
+    config.main_voltage = doc["main_v"] | desiredMainV;
+    config.drogue_duration_ms = doc["drogue_time"] | droguePWMDuration;
+    config.main_duration_ms = doc["main_time"] | mainPWMDuration;
+    
+    // Validate voltage ranges
+    if (config.vcc < 0 || config.vcc > 20.0f) {
+        debugln("❌ Invalid Vcc range (0-20V)");
+        return false;
+    }
+    if (config.drogue_voltage < 0 || config.drogue_voltage > config.vcc) {
+        debugln("❌ Invalid drogue voltage");
+        return false;
+    }
+    if (config.main_voltage < 0 || config.main_voltage > config.vcc) {
+        debugln("❌ Invalid main voltage");
+        return false;
+    }
+    
+    // Validate duration ranges (100ms to 60 seconds)
+    if (config.drogue_duration_ms < 100 || config.drogue_duration_ms > 60000) {
+        debugln("❌ Invalid drogue duration (100-60000ms)");
+        return false;
+    }
+    if (config.main_duration_ms < 100 || config.main_duration_ms > 60000) {
+        debugln("❌ Invalid main duration (100-60000ms)");
+        return false;
+    }
+    
+    return true;
+}
+
+// Apply PWM configuration (thread-safe) with durations
+void applyPWMConfig(const PWMConfig& config) {
+    Vcc = config.vcc;
+    desiredDrogueV = config.drogue_voltage;
+    desiredMainV = config.main_voltage;
+    droguePWMDuration = config.drogue_duration_ms;
+    mainPWMDuration = config.main_duration_ms;
+    
+    debug("✅ PWM Config Updated: Vcc=");
+    debug(Vcc);
+    debug("V, Drogue=");
+    debug(desiredDrogueV);
+    debug("V (");
+    debug(droguePWMDuration);
+    debug("ms), Main=");
+    debug(desiredMainV);
+    debug("V (");
+    debug(mainPWMDuration);
+    debugln("ms)");
+    
+    char log_msg[200];
+    snprintf(log_msg, sizeof(log_msg), 
+             "PWM Config: Vcc=%.1fV, Drogue=%.1fV (%lums), Main=%.1fV (%lums)\r\n",
+             Vcc, desiredDrogueV, droguePWMDuration, desiredMainV, mainPWMDuration);
+    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                           system_log_file, log_msg);
+}
 
 // Compute PWM duty from desired voltage (0..255)
 int computeDuty(float Vcc, float desiredV) {
@@ -152,7 +239,9 @@ void drogueChuteDeploy() {
     drogueStartTime = millis();
     drogueActive = true;
     DROGUE_DEPLOY_FLAG = 1;
-    debugln(String("📦 DROGUE DEPLOYED (V=") + String(desiredDrogueV) + String("V, PWM=") + String(duty) + String("/255)"));
+    debugln(String("📦 DROGUE DEPLOYED (V=") + String(desiredDrogueV) + 
+            String("V, PWM=") + String(duty) + String("/255, Duration=") + 
+            String(droguePWMDuration) + String("ms)"));
 }
 
 void mainChuteDeploy() {
@@ -162,7 +251,9 @@ void mainChuteDeploy() {
     mainStartTime = millis();
     mainActive = true;
     MAIN_CHUTE_EJECT_FLAG = 1;
-    debugln(String("📦 MAIN CHUTE DEPLOYED (V=") + String(desiredMainV) + String("V, PWM=") + String(duty) + String("/255)"));
+    debugln(String("📦 MAIN CHUTE DEPLOYED (V=") + String(desiredMainV) + 
+            String("V, PWM=") + String(duty) + String("/255, Duration=") + 
+            String(mainPWMDuration) + String("ms)"));
     //delay(MAIN_DESCENT_PYRO_CHARGE_TIME); // Block for charge duration
     // Optionally: analogWrite(MAIN_CHUTE_EJECT_PIN, 0); // Turn off after charge
 }
@@ -199,7 +290,9 @@ void armMainPyro() {
     mainActive = true;
     mainPyroArmed = true;
     MAIN_CHUTE_EJECT_FLAG = 1;
-    debugln(String("MAIN PYRO ARMED (V=") + String(desiredMainV) + String("V, PWM=") + String(duty) + String("/255)"));
+    debugln(String("🔥 MAIN PYRO ARMED (V=") + String(desiredMainV) + 
+            String("V, PWM=") + String(duty) + String("/255, Duration=") + 
+            String(mainPWMDuration) + String("ms)"));
 }
 
 void disarmMainPyro() {
@@ -220,7 +313,9 @@ void armDroguePyro() {
     droguePyroArmTime = millis();
     droguePyroArmed = true;
     DROGUE_DEPLOY_FLAG = 1;
-    debugln(String("DROGUE PYRO ARMED (V=") + String(desiredDrogueV) + String("V, PWM=") + String(duty) + String("/255)"));
+    debugln(String("🔥 DROGUE PYRO ARMED (V=") + String(desiredDrogueV) + 
+            String("V, PWM=") + String(duty) + String("/255, Duration=") + 
+            String(droguePWMDuration) + String("ms)"));
 }
 
 void disarmDroguePyro() {
@@ -235,23 +330,26 @@ void disarmDroguePyro() {
 void checkAutoDisarm() {
     if (mainPyroArmed && (millis() - mainPyroArmTime >= PYRO_ARM_DURATION)) {
         disarmMainPyro();
-        debugln("MAIN PYRO auto-disarmed after timer");
+        debugln("⏰ MAIN PYRO auto-disarmed after timer");
     }
     if (droguePyroArmed && (millis() - droguePyroArmTime >= PYRO_ARM_DURATION)) {
         disarmDroguePyro();
-        debugln("DROGUE PYRO auto-disarmed after timer");
+        debugln("⏰ DROGUE PYRO auto-disarmed after timer");
     }
-    // Additional short-duration auto-shutdown for PWM-controlled outputs (5000 ms)
-    const unsigned long SHORT_PYRO_TIMEOUT = 5000UL; // milliseconds
-    if (mainActive && (millis() - mainStartTime >= SHORT_PYRO_TIMEOUT)) {
+    // Use configurable durations instead of fixed timeout
+    if (mainActive && (millis() - mainStartTime >= mainPWMDuration)) {
         mainPWM.write(0);
         mainActive = false;
-        debugln("MAIN PYRO auto-shutdown after 5000 ms (PWM=0)");
+        debug("⏰ MAIN PYRO auto-shutdown after ");
+        debug(mainPWMDuration);
+        debugln("ms (PWM=0)");
     }
-    if (drogueActive && (millis() - drogueStartTime >= SHORT_PYRO_TIMEOUT)) {
+    if (drogueActive && (millis() - drogueStartTime >= droguePWMDuration)) {
         droguePWM.write(0);
         drogueActive = false;
-        debugln("DROGUE PYRO auto-shutdown after 5000 ms (PWM=0)");
+        debug("⏰ DROGUE PYRO auto-shutdown after ");
+        debug(droguePWMDuration);
+        debugln("ms (PWM=0)");
     }
 }
 
@@ -421,11 +519,11 @@ void checkRunTestToggle() {
  */
 void espnowCommandTask(void* pvParameters) {
     ESPNowBeaconTransmitter::CommandPacket cmd;
-    char cmdBuffer[32]; // Increased size for communication commands
+    char cmdBuffer[MAX_COMMAND_LENGTH]; // Use MAX_COMMAND_LENGTH to match queue buffer
 
     while (1) {
         if (transmitter.getNextCommand(&cmd)) {
-            size_t len = (cmd.length < 31) ? cmd.length : 31;
+            size_t len = (cmd.length < (MAX_COMMAND_LENGTH - 1)) ? cmd.length : (MAX_COMMAND_LENGTH - 1);
             memcpy(cmdBuffer, cmd.command, len);
             cmdBuffer[len] = '\0';
             
@@ -433,8 +531,34 @@ void espnowCommandTask(void* pvParameters) {
                 cmdBuffer[--len] = '\0';
             }
 
-            if (strncmp(cmdBuffer, "CMD_", 4) == 0) {
+            // Handle communication mode commands
+            if (strncmp(cmdBuffer, "CMD_MQTT_MODE", 13) == 0 ||
+                strncmp(cmdBuffer, "CMD_BEACON_MODE", 15) == 0 ||
+                strncmp(cmdBuffer, "CMD_AUTO_FALLBACK", 17) == 0 ||
+                strncmp(cmdBuffer, "CMD_GET_MODE", 12) == 0) {
                 comm_manager.handleModeCommand(String(cmdBuffer), "ESP_NOW");
+            }
+            // Handle PWM configuration command with durations
+            else if (strncmp(cmdBuffer, "CMD_SET_PWM_CONFIG:", 19) == 0) {
+                // Extract JSON payload after "CMD_SET_PWM_CONFIG:"
+                const char* jsonPayload = cmdBuffer + 19;
+                PWMConfig newConfig;
+                
+                if (parsePWMConfig(jsonPayload, newConfig)) {
+                    applyPWMConfig(newConfig);
+                    
+                    // Send confirmation with durations back via ESP-NOW
+                    char response[150];
+                    snprintf(response, sizeof(response),
+                             "PWM_CONFIG_OK:Vcc=%.1f,Drogue=%.1fV(%lums),Main=%.1fV(%lums)",
+                             Vcc, desiredDrogueV, droguePWMDuration,
+                             desiredMainV, mainPWMDuration);
+                    esp_now_send(transmitter.getBaseMAC(), (uint8_t*)response, strlen(response));
+                } else {
+                    debugln("❌ Invalid PWM config JSON");
+                    const char* error_msg = "PWM_CONFIG_ERROR:Invalid_JSON";
+                    esp_now_send(transmitter.getBaseMAC(), (uint8_t*)error_msg, strlen(error_msg));
+                }
             }
             else if (strcmp(cmdBuffer, "ARM") == 0) {
                 #if USE_KALMAN_FOR_STATE_DETECTION

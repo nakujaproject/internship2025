@@ -63,6 +63,17 @@ bool commandPending = false;
 uint32_t commandSentTime = 0;
 const uint32_t COMMAND_TIMEOUT = 5000; // 5 seconds
 
+// PWM Configuration tracking
+struct PWMConfigStatus {
+  float vcc = 0;
+  float drogue_v = 0;
+  float main_v = 0;
+  unsigned long drogue_time_ms = 0;
+  unsigned long main_time_ms = 0;
+  bool config_received = false;
+  uint32_t last_update_time = 0;
+} pwm_status;
+
 // Function to parse 25-field CSV string (matches flight computer beacon output with Kalman filter data)
 bool parseCSV(const char* csv, TelemetryData& data) {
   return sscanf(csv, "%lu,%hhu,%hhu,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%f,%lu,%f,%f,%f,%f,%hhu,%hhu,%f,%d,%f,%f",
@@ -234,7 +245,48 @@ void onESPNowDataReceived(const esp_now_recv_info_t *recv_info, const uint8_t *i
 
   sendLogMessage("INFO", ("ESP-NOW response from rocket: " + response).c_str(), "BaseStation");
 
-  if (response.indexOf("Mode:") != -1) {
+  // Parse PWM configuration responses with durations
+  if (response.startsWith("PWM_CONFIG_OK:")) {
+    // Extract: "PWM_CONFIG_OK:Vcc=17.8,Drogue=9.0V(3000ms),Main=10.0V(5000ms)"
+    int vccStart = response.indexOf("Vcc=") + 4;
+    int drogueStart = response.indexOf("Drogue=") + 7;
+    int mainStart = response.indexOf("Main=") + 5;
+    
+    if (vccStart > 3 && drogueStart > 6 && mainStart > 4) {
+      // Parse Vcc
+      pwm_status.vcc = response.substring(vccStart, response.indexOf(',', vccStart)).toFloat();
+      
+      // Parse drogue: "9.0V(3000ms)"
+      String drogueStr = response.substring(drogueStart, response.indexOf(',', drogueStart));
+      int drogueVEnd = drogueStr.indexOf('V');
+      int drogueTimeStart = drogueStr.indexOf('(') + 1;
+      int drogueTimeEnd = drogueStr.indexOf("ms)");
+      pwm_status.drogue_v = drogueStr.substring(0, drogueVEnd).toFloat();
+      pwm_status.drogue_time_ms = drogueStr.substring(drogueTimeStart, drogueTimeEnd).toInt();
+      
+      // Parse main: "10.0V(5000ms)"
+      String mainStr = response.substring(mainStart);
+      int mainVEnd = mainStr.indexOf('V');
+      int mainTimeStart = mainStr.indexOf('(') + 1;
+      int mainTimeEnd = mainStr.indexOf("ms)");
+      pwm_status.main_v = mainStr.substring(0, mainVEnd).toFloat();
+      pwm_status.main_time_ms = mainStr.substring(mainTimeStart, mainTimeEnd).toInt();
+      
+      pwm_status.config_received = true;
+      pwm_status.last_update_time = millis();
+      
+      char msg[250];
+      snprintf(msg, sizeof(msg), "✅ PWM Config: Vcc=%.1fV, Drogue=%.1fV(%lums), Main=%.1fV(%lums)",
+               pwm_status.vcc, pwm_status.drogue_v, pwm_status.drogue_time_ms,
+               pwm_status.main_v, pwm_status.main_time_ms);
+      sendLogMessage("INFO", msg, "BaseStation");
+    }
+  }
+  else if (response.startsWith("PWM_CONFIG_ERROR:")) {
+    String error = response.substring(17);
+    sendLogMessage("ERROR", ("❌ PWM Config Failed: " + error).c_str(), "BaseStation");
+  }
+  else if (response.indexOf("Mode:") != -1) {
     sendLogMessage("INFO", ("Rocket communication status: " + response).c_str(), "BaseStation");
   }
   else if (response.indexOf("ARMED") != -1 || response.indexOf("DISARMED") != -1) {
@@ -249,6 +301,33 @@ void handleSerialCommands() {
   if (Serial.available()) {
     String command = Serial.readStringUntil('\n');
     command.trim();
+    
+    // Handle PWM configuration commands (case-sensitive for JSON)
+    if (command.startsWith("SET_PWM:") || command.startsWith("set_pwm:")) {
+      String jsonPayload = command.substring(8);
+      jsonPayload.trim();
+      
+      // Validate JSON structure
+      StaticJsonDocument<256> testDoc;
+      DeserializationError error = deserializeJson(testDoc, jsonPayload);
+      
+      if (error) {
+        sendLogMessage("ERROR", ("Invalid JSON: " + String(error.c_str())).c_str(), "BaseStation");
+        sendLogMessage("INFO", "Format: SET_PWM:{\"vcc\":14.8,\"drogue_v\":9.0,\"main_v\":10.0,\"drogue_time\":3000,\"main_time\":5000}", "BaseStation");
+        return;
+      }
+      
+      String fullCommand = "CMD_SET_PWM_CONFIG:" + jsonPayload;
+      lastCommand = fullCommand;
+      commandPending = true;
+      commandSentTime = millis();
+      
+      char msg[250];
+      snprintf(msg, sizeof(msg), "⚡ PWM Config: %s", jsonPayload.c_str());
+      sendLogMessage("INFO", msg, "BaseStation");
+      return;
+    }
+    
     command.toUpperCase();
 
     if (command == "ARM" || command == "DISARM" || command == "RESET" ||
@@ -290,10 +369,24 @@ void handleSerialCommands() {
       commandSentTime = millis();
       sendLogMessage("INFO", "Communication mode command: Get current mode status", "BaseStation");
     }
+    else if (command == "PWM_STATUS" || command == "GET_PWM") {
+      if (pwm_status.config_received) {
+        char msg[250];
+        snprintf(msg, sizeof(msg), "📊 PWM Config: Vcc=%.1fV, Drogue=%.1fV(%lums), Main=%.1fV(%lums) | Updated %lus ago",
+                 pwm_status.vcc, pwm_status.drogue_v, pwm_status.drogue_time_ms,
+                 pwm_status.main_v, pwm_status.main_time_ms,
+                 (millis() - pwm_status.last_update_time) / 1000);
+        sendLogMessage("INFO", msg, "BaseStation");
+      } else {
+        sendLogMessage("INFO", "No PWM config received yet", "BaseStation");
+      }
+    }
     else if (command == "HELP") {
       sendLogMessage("INFO", "Available commands:", "BaseStation");
       sendLogMessage("INFO", "Flight: ARM, DISARM, RESET, MAIN_ON, MAIN_OFF, DROGUE_ON, DROGUE_OFF", "BaseStation");
       sendLogMessage("INFO", "Communication: MQTT, BEACON, AUTO_ON, AUTO_OFF, STATUS", "BaseStation");
+      sendLogMessage("INFO", "PWM Config: SET_PWM:{\"vcc\":14.8,\"drogue_v\":9.0,\"main_v\":10.0,\"drogue_time\":3000,\"main_time\":5000}", "BaseStation");
+      sendLogMessage("INFO", "PWM Query: PWM_STATUS or GET_PWM", "BaseStation");
     }
     else {
       sendLogMessage("WARNING", ("Unknown command: " + command + " (try HELP)").c_str(), "BaseStation");
@@ -312,7 +405,11 @@ void sendCommandToRocket() {
 
   esp_err_t result = ESP_FAIL;
 
-  if (lastCommand == "ARM") {
+  // Handle PWM configuration command (can be long)
+  if (lastCommand.startsWith("CMD_SET_PWM_CONFIG:")) {
+    result = esp_now_send(rocket_mac, (uint8_t*)lastCommand.c_str(), lastCommand.length());
+  }
+  else if (lastCommand == "ARM") {
     result = esp_now_send(rocket_mac, (uint8_t*)"ARM", 3);
   }
   else if (lastCommand == "DISARM") {
@@ -363,7 +460,7 @@ void setup() {
   BTSerial.begin(115200, SERIAL_8N1, BT_RX, BT_TX);
   delay(1000);
 
-  sendLogMessage("INFO", "🚀 N4 Base Station - Beacon Mode with Smart Commands", "BaseStation");
+  sendLogMessage("INFO", "🚀 N4 Base Station - Beacon Mode with Smart Commands + PWM Config", "BaseStation");
   sendLogMessage("INFO", "📡 Supporting 25-field CSV beacon parsing with Kalman filter data", "BaseStation");
 
   WiFi.mode(WIFI_STA);
@@ -400,7 +497,9 @@ void setup() {
   sendLogMessage("INFO", "🔧 Beacon RSSI measurement active", "BaseStation");
   sendLogMessage("INFO", "🎯 Velocity, battery & Kalman filter data from flight computer", "BaseStation");
   sendLogMessage("INFO", "🎛️ Smart command interface enabled", "BaseStation");
+  sendLogMessage("INFO", "⚡ PWM configuration commands enabled", "BaseStation");
   sendLogMessage("INFO", "Commands: ARM, DISARM, RESET, MQTT, BEACON, AUTO_ON, AUTO_OFF, STATUS", "BaseStation");
+  sendLogMessage("INFO", "PWM: SET_PWM:{\"vcc\":14.8,\"drogue_v\":9.0,\"main_v\":10.0,\"drogue_time\":3000,\"main_time\":5000}", "BaseStation");
 }
 
 void loop() {
@@ -438,12 +537,24 @@ void loop() {
       telemetry_info["state"] = telemetry.state;
     }
 
+    // Add PWM config status to heartbeat
+    if (pwm_status.config_received) {
+      JsonObject pwm_info = statusDoc.createNestedObject("pwm_config");
+      pwm_info["vcc"] = pwm_status.vcc;
+      pwm_info["drogue_voltage"] = pwm_status.drogue_v;
+      pwm_info["main_voltage"] = pwm_status.main_v;
+      pwm_info["drogue_duration_ms"] = pwm_status.drogue_time_ms;
+      pwm_info["main_duration_ms"] = pwm_status.main_time_ms;
+      pwm_info["last_update_sec_ago"] = (millis() - pwm_status.last_update_time) / 1000;
+    }
+
     statusDoc["waiting_for_commands"] = !commandPending;
     statusDoc["monitoring_active"] = true;
     statusDoc["beacon_mode_only"] = true;
     statusDoc["csv_fields_expected"] = 25;
     statusDoc["kalman_filter_data"] = true;
     statusDoc["smart_commands_enabled"] = true;
+    statusDoc["pwm_config_enabled"] = true;
     statusDoc["command_timeout_ms"] = COMMAND_TIMEOUT;
 
     String statusString;
