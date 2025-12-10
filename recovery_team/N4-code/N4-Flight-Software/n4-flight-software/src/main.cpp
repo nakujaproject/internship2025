@@ -15,6 +15,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <ESP32PWM.h>
 #include <PubSubClient.h> // TODO: ADD A MQTT SWITCH - TO USE MQTT OR NOT
 #include <TinyGPSPlus.h>  // handle GPS
 #include <SFE_BMP180.h>     // For BMP180
@@ -111,6 +112,33 @@ const unsigned long PYRO_ARM_DURATION = 10 * 60 * 1000; // 5 minutes
 bool mainPyroArmed = false;
 bool droguePyroArmed = false;
 
+// --- PWM objects and voltage-based configuration ---
+ESP32PWM droguePWM;
+ESP32PWM mainPWM;
+
+// User-specified voltages
+float Vcc = 17.8f;             // input battery voltage
+float desiredDrogueV = 3.0f;   // desired output voltage at drogue pin
+float desiredMainV   = 10.0f;  // desired output voltage at main pin
+
+// Timing-based auto-shutdown variables
+unsigned long drogueStartTime = 0;
+unsigned long mainStartTime = 0;
+bool drogueActive = false;
+bool mainActive = false;
+
+// Compute PWM duty from desired voltage (0..255)
+int computeDuty(float Vcc, float desiredV) {
+    if (Vcc <= 0) return 0;
+    float duty = desiredV / Vcc;
+    duty = constrain(duty, 0.0f, 1.0f);
+    return (int)(duty * 255);
+}
+
+// Helper queries
+bool isDrogueOn() { return drogueActive; }
+bool isMainOn()   { return mainActive; }
+
 void arm_pyros() {
     digitalWrite(REMOTE_SWITCH, HIGH);
     // Small delay to ensure pin state is stable
@@ -118,20 +146,23 @@ void arm_pyros() {
 }
 
 void drogueChuteDeploy() {
-    // Simple PWM: set pin HIGH for charge time, then optionally LOW
-    //analogWrite(DROGUE_PIN, 255); // Full PWM
-    digitalWrite(DROGUE_PIN, HIGH);
+    // Start PWM at voltage-derived duty
+    int duty = computeDuty(Vcc, desiredDrogueV);
+    droguePWM.write(duty);
+    drogueStartTime = millis();
+    drogueActive = true;
     DROGUE_DEPLOY_FLAG = 1;
-    debugln("📦 DROGUE DEPLOYED (PWM=255)");
-    //delay(PYRO_CHARGE_TIME); // Block for charge duration
-    // Optionally: analogWrite(DROGUE_PIN, 0); // Turn off after charge
+    debugln(String("📦 DROGUE DEPLOYED (V=") + String(desiredDrogueV) + String("V, PWM=") + String(duty) + String("/255)"));
 }
 
 void mainChuteDeploy() {
-   // analogWrite(MAIN_CHUTE_EJECT_PIN, 255); // Full PWM
-    digitalWrite(MAIN_CHUTE_EJECT_PIN, HIGH);
+    // Start PWM at voltage-derived duty
+    int duty = computeDuty(Vcc, desiredMainV);
+    mainPWM.write(duty);
+    mainStartTime = millis();
+    mainActive = true;
     MAIN_CHUTE_EJECT_FLAG = 1;
-    debugln("📦 MAIN CHUTE DEPLOYED (PWM=255)");
+    debugln(String("📦 MAIN CHUTE DEPLOYED (V=") + String(desiredMainV) + String("V, PWM=") + String(duty) + String("/255)"));
     //delay(MAIN_DESCENT_PYRO_CHARGE_TIME); // Block for charge duration
     // Optionally: analogWrite(MAIN_CHUTE_EJECT_PIN, 0); // Turn off after charge
 }
@@ -140,9 +171,13 @@ void chutesInit() {
     pinMode(DROGUE_PIN, OUTPUT);
     pinMode(MAIN_CHUTE_EJECT_PIN, OUTPUT);
     pinMode(REMOTE_SWITCH, OUTPUT); // remote switch to arm pyros
-    //digitalWrite(DROGUE_PIN, LOW); // set drogue pin LOW
-    //digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW); // set main chute pin LOW
-    //digitalWrite(REMOTE_SWITCH, LOW); // set remote switch LOW
+    // Initialize PWM timers and attach pins: 1kHz, 8-bit
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    droguePWM.attachPin(DROGUE_PIN, 1000, 8); // 1kHz, 8-bit
+    mainPWM.attachPin(MAIN_CHUTE_EJECT_PIN, 1000, 8);
+    droguePWM.write(0);
+    mainPWM.write(0);
 }
 
 /**
@@ -158,35 +193,43 @@ void disarm_pyros() {
 void armMainPyro() {
     //analogWrite(MAIN_CHUTE_EJECT_PIN, 255);
     mainPyroArmTime = millis();
-    digitalWrite(MAIN_CHUTE_EJECT_PIN, HIGH);
+    int duty = computeDuty(Vcc, desiredMainV);
+    mainPWM.write(duty);
+    mainStartTime = millis();
+    mainActive = true;
     mainPyroArmed = true;
     MAIN_CHUTE_EJECT_FLAG = 1;
-    debugln("MAIN PYRO ARMED");
+    debugln(String("MAIN PYRO ARMED (V=") + String(desiredMainV) + String("V, PWM=") + String(duty) + String("/255)"));
 }
 
 void disarmMainPyro() {
     //analogWrite(MAIN_CHUTE_EJECT_PIN, 0);
-    digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW);
+    mainPWM.write(0);
+    mainActive = false;
     mainPyroArmed = false;
     MAIN_CHUTE_EJECT_FLAG = 0;
-    debugln("MAIN PYRO DISARMED");
+    debugln("MAIN PYRO DISARMED (PWM=0)");
 }
 
 void armDroguePyro() {
     //analogWrite(DROGUE_PIN, 255);
-    digitalWrite(DROGUE_PIN, HIGH);
+    int duty = computeDuty(Vcc, desiredDrogueV);
+    droguePWM.write(duty);
+    drogueStartTime = millis();
+    drogueActive = true;
     droguePyroArmTime = millis();
     droguePyroArmed = true;
     DROGUE_DEPLOY_FLAG = 1;
-    debugln("DROGUE PYRO ARMED");
+    debugln(String("DROGUE PYRO ARMED (V=") + String(desiredDrogueV) + String("V, PWM=") + String(duty) + String("/255)"));
 }
 
 void disarmDroguePyro() {
     //analogWrite(DROGUE_PIN, 0);
-    digitalWrite(DROGUE_PIN, LOW);
+    droguePWM.write(0);
+    drogueActive = false;
     droguePyroArmed = false;
     DROGUE_DEPLOY_FLAG = 0;
-    debugln("DROGUE PYRO DISARMED");
+    debugln("DROGUE PYRO DISARMED (PWM=0)");
 }
 
 void checkAutoDisarm() {
@@ -197,6 +240,18 @@ void checkAutoDisarm() {
     if (droguePyroArmed && (millis() - droguePyroArmTime >= PYRO_ARM_DURATION)) {
         disarmDroguePyro();
         debugln("DROGUE PYRO auto-disarmed after timer");
+    }
+    // Additional short-duration auto-shutdown for PWM-controlled outputs (5000 ms)
+    const unsigned long SHORT_PYRO_TIMEOUT = 5000UL; // milliseconds
+    if (mainActive && (millis() - mainStartTime >= SHORT_PYRO_TIMEOUT)) {
+        mainPWM.write(0);
+        mainActive = false;
+        debugln("MAIN PYRO auto-shutdown after 5000 ms (PWM=0)");
+    }
+    if (drogueActive && (millis() - drogueStartTime >= SHORT_PYRO_TIMEOUT)) {
+        droguePWM.write(0);
+        drogueActive = false;
+        debugln("DROGUE PYRO auto-shutdown after 5000 ms (PWM=0)");
     }
 }
 
@@ -1462,14 +1517,14 @@ void checkFlightState(void* pvParameters) {
                             snprintf(log_msg, sizeof(log_msg), "MAIN CHUTE DEPLOYED at %.1fm altitude\r\n", current_alt);
                             SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, log_msg);
                         } else {
-                            debug("⚠️ MAIN CHUTE deployment blocked - altitude too low: ");
+                            debug("MAIN CHUTE deployment blocked - altitude too low: ");
                             debug(current_alt);
                             debugln("m");
                         }
                     } else if (MAIN_CHUTE_EJECT_FLAG == 1) {
                         // Main chute already deployed, move to descent state
                         current_state = ARMED_FLIGHT_STATE::MAIN_DESCENT;
-                        debugln("✅ MAIN CHUTE already deployed - moving to descent");
+                        debugln(" MAIN CHUTE already deployed - moving to descent");
                     }
                     break;
                 case ARMED_FLIGHT_STATE::MAIN_DESCENT:
@@ -1597,7 +1652,7 @@ void flightStateCallback(void* pvParameters) {
                     
                     if (current_alt > LAUNCH_DETECTION_THRESHOLD) {
                         drogueChuteDeploy();
-                        debug("🔄 BACKUP DROGUE DEPLOYMENT at ");
+                        debug("BACKUP DROGUE DEPLOYMENT at ");
                         debug(current_alt);
                         debugln("m altitude");
                     }
