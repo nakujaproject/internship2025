@@ -30,7 +30,7 @@ function App() {
     acceleration: { ax: 0, ay: 0, az: 0, pitch: 0, roll: 0 },
     gyro: { gx: 0, gy: 0, gz: 0 },
     kalman: { altitude: 0, verticalVelocity: 0 }, // Added Kalman filter data
-    communicationMode: "MQTT", // Track if using MQTT or Beacon mode - default to MQTT
+    communicationMode: "Beacon", // Track if using MQTT or Beacon mode - default to Beacon
     packetsReceived: 0, // Track total packets from base station
   });
   // Track the path of locations
@@ -46,7 +46,7 @@ function App() {
       lastMessageTime: null,
       messageCount: 0,
       rssi: 0,
-      communicationMode: "MQTT", // MQTT or Beacon - default to MQTT
+      communicationMode: "Beacon", // MQTT or Beacon - default to Beacon
       signalQuality: "Unknown", // Good, Fair, Poor based on RSSI
     },
   });
@@ -224,8 +224,19 @@ function App() {
       case "STATUS":
         backendCommand = "CMD_STATUS";
         break;
+      case "PWM_STATUS":
+        backendCommand = "PWM_STATUS";
+        break;
+      case "HELP":
+        backendCommand = "HELP";
+        break;
       default:
-        backendCommand = command.toUpperCase();
+        // Handle SET_PWM commands (they come with JSON payload)
+        if (command.startsWith("SET_PWM:")) {
+          backendCommand = command; // Pass through as-is
+        } else {
+          backendCommand = command.toUpperCase();
+        }
     }
 
     const message = new MQTT.Message(backendCommand);

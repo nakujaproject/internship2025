@@ -158,22 +158,42 @@ def start_basestation():
         # 4) Node API server
         _spawn("node api", ["cmd", "/c", "node", "server.js"]) 
 
-        # 5) Backend Python server (runs headless by design)
-        print("▶ Starting server.py …")
-        # Pass N4_SIM=1 to server.py
-        env = os.environ.copy()
-        env["N4_SIM"] = "0"
-        srv = subprocess.Popen(
-            ["cmd", "/c", sys.executable, "server.py"],
-            shell=True,
-            cwd=os.getcwd(),
-            env=env,
-            stdout=None,
-            stderr=None,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        # 5) Python telemetry server runs in main process
+        print("▶ Starting integrated telemetry server...")
+        
+        # Import and run the integrated server
+        import threading
+        from research.server import (
+            setup_csv_logging, setup_mqtt_connection, start_usb_monitor,
+            open_serial, start_simulation, main_loop, command_interface,
+            SIMULATION_MODE
         )
-        PROC_GROUP.append(("server.py", srv))
-        srv.wait()
+        
+        # Setup CSV logging
+        setup_csv_logging()
+        
+        # Setup MQTT connection
+        setup_mqtt_connection()
+        
+        # Start USB monitoring
+        start_usb_monitor()
+        
+        # Simulation vs real serial
+        if SIMULATION_MODE:
+            print("SIMULATION_MODE=1: skipping serial open and starting simulator")
+            start_simulation()
+        else:
+            open_serial()
+        
+        # Start main loop in background
+        loop_thread = threading.Thread(target=main_loop, daemon=True)
+        loop_thread.start()
+        
+        print("✅ Telemetry server running")
+        
+        # Keep main process alive
+        while True:
+            time.sleep(1)
 
     except KeyboardInterrupt:
         print("\n🛑 Shutting down base station...")

@@ -47,6 +47,16 @@ PORT_8080 = 8080           # Port for development server (used by external tiles
 # Optionally set COM port via environment variable (for HC-05 Bluetooth or any specific port)
 N4_COM_PORT = os.environ.get('N4_COM_PORT', 'COM12').strip()
 
+# === COMMUNICATION METHOD PREFERENCE ===
+# FORCE_USB_SERIAL: True = Only use USB Serial (ignore Bluetooth)
+#                   False = Auto-detect (prefer Bluetooth if available, fallback to USB)
+# You can also set via environment: N4_FORCE_USB=1
+FORCE_USB_SERIAL = os.environ.get('N4_FORCE_USB', '0').strip() == '1'
+# FORCE_BLUETOOTH: True = Only use Bluetooth (ignore USB Serial)
+#                  False = Auto-detect
+# You can also set via environment: N4_FORCE_BT=1
+FORCE_BLUETOOTH = os.environ.get('N4_FORCE_BT', '0').strip() == '1'
+
 # === CONTROL & TEST FLAGS ===
 # USE_GUI_CONTROL: 1 = control via Tkinter GUI; 0 = control via React app (MQTT commands)
 USE_GUI_CONTROL = int(os.environ.get('N4_USE_GUI', '0'))
@@ -233,51 +243,68 @@ def find_esp32_port():
     esp32_ids = ['ESP32', 'CP210', 'CH340', 'CH341', 'Silicon Labs']
     bt_ids = ['HC-05', 'HC-06', 'Bluetooth', 'BTHENUM', 'Standard Serial over Bluetooth']
 
+    # Communication method preference logging
+    if FORCE_USB_SERIAL:
+        logger.info("🔌 Communication Mode: FORCED USB Serial (Bluetooth disabled)")
+    elif FORCE_BLUETOOTH:
+        logger.info("📡 Communication Mode: FORCED Bluetooth (USB disabled)")
+    else:
+        logger.info("🔄 Communication Mode: Auto-detect (Bluetooth preferred, USB fallback)")
+
     # 1. If explicit COM port is set, try it first (for HC-05 or any user-specified port)
     if N4_COM_PORT:
-        try:
-            # Try default baud for HC-05 (9600), fallback to SERIAL_BAUD
-            try_bauds = [9600, SERIAL_BAUD]
-            for baud in try_bauds:
+        # Skip if forced mode conflicts
+        if FORCE_USB_SERIAL and any(bt_id in N4_COM_PORT.upper() for bt_id in ['BLUETOOTH', 'BT']):
+            logger.warning(f"⚠️ Skipping Bluetooth port {N4_COM_PORT} (USB Serial forced)")
+        elif FORCE_BLUETOOTH and not any(bt_id in N4_COM_PORT.upper() for bt_id in ['BLUETOOTH', 'BT']):
+            logger.warning(f"⚠️ Skipping USB port {N4_COM_PORT} (Bluetooth forced)")
+        else:
+            try:
+                # Try default baud for HC-05 (9600), fallback to SERIAL_BAUD
+                try_bauds = [9600, SERIAL_BAUD]
+                for baud in try_bauds:
+                    try:
+                        test_conn = serial.Serial(N4_COM_PORT, baud, timeout=0.5)
+                        test_conn.close()
+                        logger.info(f"✅ Using specified COM port: {N4_COM_PORT} @ {baud} bps")
+                        return N4_COM_PORT
+                    except Exception as e:
+                        logger.debug(f"Specified COM port {N4_COM_PORT} not available at {baud}: {e}")
+                # If both bauds fail, fallback to auto-detect
+            except Exception as e:
+                logger.debug(f"Specified COM port {N4_COM_PORT} not available: {e}")
+
+    # 2. Auto-detect ESP32/USB/TTL adapters (skip if Bluetooth forced)
+    if not FORCE_BLUETOOTH:
+        for port in ports:
+            desc = (port.description or "") + " " + (port.manufacturer or "")
+            hwid = port.hwid or ""
+            if any(id in desc for id in esp32_ids) or '10C4:EA60' in hwid:
                 try:
-                    test_conn = serial.Serial(N4_COM_PORT, baud, timeout=0.5)
+                    test_conn = serial.Serial(port.device, SERIAL_BAUD, timeout=0.5)
                     test_conn.close()
-                    logger.info(f"✅ Using specified COM port: {N4_COM_PORT} @ {baud} bps")
-                    return N4_COM_PORT
+                    logger.debug(f"Found available ESP32/USB at {port.device}")
+                    return port.device
                 except Exception as e:
-                    logger.debug(f"Specified COM port {N4_COM_PORT} not available at {baud}: {e}")
-            # If both bauds fail, fallback to auto-detect
-        except Exception as e:
-            logger.debug(f"Specified COM port {N4_COM_PORT} not available: {e}")
+                    logger.debug(f"ESP32/USB found at {port.device} but not available: {e}")
+                    continue
 
-    # 2. Auto-detect ESP32/USB/TTL adapters
-    for port in ports:
-        desc = (port.description or "") + " " + (port.manufacturer or "")
-        hwid = port.hwid or ""
-        if any(id in desc for id in esp32_ids) or '10C4:EA60' in hwid:
-            try:
-                test_conn = serial.Serial(port.device, SERIAL_BAUD, timeout=0.5)
-                test_conn.close()
-                logger.debug(f"Found available ESP32/USB at {port.device}")
-                return port.device
-            except Exception as e:
-                logger.debug(f"ESP32/USB found at {port.device} but not available: {e}")
-                continue
-
-    # 3. Auto-detect Bluetooth SPP (HC-05/HC-06)
-    for port in ports:
-        desc = (port.description or "") + " " + (port.manufacturer or "")
-        hwid = port.hwid or ""
-        if any(id in desc for id in bt_ids) or 'BTHENUM' in hwid:
-            try:
-                # HC-05 default is often 9600; we'll just test if port opens at 9600
-                test_conn = serial.Serial(port.device, 9600, timeout=0.5)
-                test_conn.close()
-                logger.debug(f"Found available Bluetooth (HC-xx) at {port.device}")
-                return port.device
-            except Exception as e:
-                logger.debug(f"Bluetooth port {port.device} not available: {e}")
-                continue
+    # 3. Auto-detect Bluetooth SPP (HC-05/HC-06) (skip if USB forced)
+    if not FORCE_USB_SERIAL:
+        for port in ports:
+            desc = (port.description or "") + " " + (port.manufacturer or "")
+            hwid = port.hwid or ""
+            if any(id in desc for id in bt_ids) or 'BTHENUM' in hwid:
+                try:
+                    # HC-05 default is often 9600; we'll just test if port opens at 9600
+                    test_conn = serial.Serial(port.device, 9600, timeout=0.5)
+                    test_conn.close()
+                    logger.debug(f"Found available Bluetooth (HC-xx) at {port.device}")
+                    return port.device
+                except Exception as e:
+                    logger.debug(f"Bluetooth port {port.device} not available: {e}")
+                    continue
+    
     return None
 
 def open_serial():
@@ -701,6 +728,10 @@ def process_serial_data(line):
             logger.debug(f"📝 [SERIAL] {line}")
             return
         
+        # Strip device identifier if present (e.g., |ESP32:N4_BASE_BT_1)
+        if '|ESP32:' in line:
+            line = line.split('|ESP32:')[0].strip()
+            
         # Skip incomplete JSON lines (common with serial communication)
         if line.startswith('{') and not line.endswith('}'):
             logger.debug(f"⚠️ Incomplete JSON line, skipping: {line[:50]}...")

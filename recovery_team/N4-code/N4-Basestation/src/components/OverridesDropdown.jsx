@@ -8,6 +8,15 @@ function OverridesDropdown({
   isConnected = true,
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  
+  // PWM configuration state
+  const [pwmConfig, setPwmConfig] = useState({
+    vcc: 14.8,
+    drogue_v: 9.0,
+    main_v: 10.0,
+    drogue_time: 3000,
+    main_time: 5000,
+  });
 
   const confirmAndSend = (label, cmd) => {
     if (window.confirm(`Are you sure you want to ${label}?`)) {
@@ -68,6 +77,99 @@ function OverridesDropdown({
               >
                 {mainArmed ? "Disarm" : "Arm"}
               </Button>
+            </div>
+          </div>
+
+          {/* PWM Configuration Section */}
+          <div className="mt-4 p-3 rounded-lg border border-gray-300 bg-gray-50">
+            <div className="text-xs font-semibold uppercase text-gray-700 mb-2">PWM Configuration</div>
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-600">VCC (V)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={pwmConfig.vcc}
+                    onChange={(e) => setPwmConfig({ ...pwmConfig, vcc: parseFloat(e.target.value) })}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-600">Drogue V (V)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={pwmConfig.drogue_v}
+                    onChange={(e) => setPwmConfig({ ...pwmConfig, drogue_v: parseFloat(e.target.value) })}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-600">Main V (V)</label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={pwmConfig.main_v}
+                    onChange={(e) => setPwmConfig({ ...pwmConfig, main_v: parseFloat(e.target.value) })}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-gray-600">Drogue Time (ms)</label>
+                  <input
+                    type="number"
+                    step="100"
+                    value={pwmConfig.drogue_time}
+                    onChange={(e) => setPwmConfig({ ...pwmConfig, drogue_time: parseInt(e.target.value) })}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-gray-600">Main Time (ms)</label>
+                  <input
+                    type="number"
+                    step="100"
+                    value={pwmConfig.main_time}
+                    onChange={(e) => setPwmConfig({ ...pwmConfig, main_time: parseInt(e.target.value) })}
+                    className="w-full px-2 py-1 text-xs border border-gray-300 rounded"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    onClick={() => {
+                      const cmd = `SET_PWM:${JSON.stringify(pwmConfig)}`;
+                      if (window.confirm(`Send PWM config?\n${cmd}`)) {
+                        onSendCommand?.(cmd);
+                      }
+                    }}
+                    disabled={!isConnected}
+                    className="w-full px-2 py-1 rounded-md shadow-md border-2 font-bold text-xs uppercase bg-blue-600 hover:bg-blue-700 text-white"
+                  >
+                    SET PWM
+                  </Button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <Button
+                  onClick={() => onSendCommand?.("PWM_STATUS")}
+                  disabled={!isConnected}
+                  className="px-2 py-1 rounded-md shadow-md border-2 font-bold text-xs uppercase bg-green-600 hover:bg-green-700 text-white"
+                >
+                  PWM STATUS
+                </Button>
+                <Button
+                  onClick={() => onSendCommand?.("HELP")}
+                  disabled={!isConnected}
+                  className="px-2 py-1 rounded-md shadow-md border-2 font-bold text-xs uppercase bg-gray-600 hover:bg-gray-700 text-white"
+                >
+                  HELP
+                </Button>
+              </div>
             </div>
           </div>
         </div>

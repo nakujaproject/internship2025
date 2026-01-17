@@ -308,23 +308,49 @@ void loop() {
 
 ## 8. N4 Base Station Configuration
 
-For the N4 rocket recovery system base station, the HC-05 should be configured as follows:
+For the N4 rocket recovery system base station, the HC-05 should be configured using the following naming paradigm:
 
+### Naming Convention
+- **Rocket 1 / Base Station 1**: Name = `N4_Base_BT_0001`, Password = `0001`
+- **Rocket 2 / Base Station 2**: Name = `N4_Base_BT_0002`, Password = `0002`
+- **Rocket N / Base Station N**: Name = `N4_Base_BT_000N`, Password = `000N`
+
+This allows multiple rocket-base station pairs to operate independently without interference.
+
+### Configuration Commands
+
+**For Rocket/Base Station 1:**
 ```text
-AT+NAME=N4_Base_BT
-AT+PSWD=1234
+AT+NAME=N4_Base_BT_0001
+AT+PSWD=0001
 AT+UART=115200,0,0
 AT+ROLE=0
 AT+RESET
 ```
 
-This configures:
-- **Name**: N4_Base_BT (easy identification)
-- **Password**: 1234 (default, can be changed for security)
+**For Rocket/Base Station 2:**
+```text
+AT+NAME=N4_Base_BT_0002
+AT+PSWD=0002
+AT+UART=115200,0,0
+AT+ROLE=0
+AT+RESET
+```
+
+**For Additional Base Stations:**
+Replace the number in both name and password (e.g., 0003, 0004, etc.)
+
+### Configuration Parameters
+- **Name**: N4_Base_BT_000X (unique identification per rocket/base station)
+- **Password**: 000X (4-digit matching the rocket/base station number)
 - **Baud Rate**: 115200 (matches base station UART)
 - **Role**: Slave (allows mobile devices to connect)
 
-After configuration, power cycle the module **without EN/KEY HIGH** to enter normal Bluetooth mode for operational use.
+### Important Notes
+- Always use matching numbers for name and password
+- Each rocket should have its dedicated base station number
+- Recommended format: 4-digit with leading zeros (0001-9999)
+- After configuration, power cycle the module **without EN/KEY HIGH** to enter normal Bluetooth mode for operational use
 
 ---
 
