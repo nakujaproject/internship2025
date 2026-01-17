@@ -371,7 +371,7 @@ def start_telemetry_server(bluetooth_port, simulation_mode):
         print(f"     Mode: LIVE")
     
     try:
-        from research.server import (
+        from research.scripts.server import (
             setup_csv_logging, setup_mqtt_connection, start_usb_monitor,
             open_serial, start_simulation, main_loop,
             SIMULATION_MODE as server_sim_mode
