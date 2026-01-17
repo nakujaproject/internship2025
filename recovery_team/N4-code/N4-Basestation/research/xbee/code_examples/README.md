@@ -2,17 +2,59 @@
 
 This folder contains working Arduino/ESP32 sketches for XBee Pro 900HP communication testing.
 
-## 📁 Folder Structure
+## 📁 Folder Structure (Categorized by Protocol)
 
 ```
 code_examples/
-├── spi_sender_esp32/           # Binary telemetry sender via SPI
-├── spi_receiver_esp32/         # Binary telemetry receiver via SPI
-├── spi_rescue_programmer/      # Recovery tool to re-enable UART
-├── arduino_uart_receiver/      # UART receiver with binary struct parsing
-├── uart_simple_sender/         # Text message sender (testing/range tests)
-└── uart_simple_receiver/       # Text message receiver (testing/range tests)
+│
+├── 📂 UART MODE (Recommended for Production)
+│   ├── uart_production/              ⭐ FINAL FLIGHT-READY CODE
+│   │   ├── uart_csv_sender_rocket/      # 50Hz CSV sender (ESP32)
+│   │   └── uart_csv_receiver_ground/    # CSV parser & display (ESP32)
+│   ├── uart_simple_sender/              # Text "Hello World" sender
+│   ├── uart_simple_receiver/            # Text message receiver
+│   └── arduino_uart_receiver/           # Binary struct UART receiver
+│
+├── 📂 SPI MODE (High Performance - Complex)
+│   ├── spi_sender_esp32/                # 10Hz binary telemetry sender
+│   ├── spi_receiver_esp32/              # Binary struct SPI receiver
+│   └── spi_rescue_programmer/           # ⚠️ Recovery tool (restore UART)
+│
+└── README.md (this file)
 ```
+
+---
+
+## ⭐ PRODUCTION CODE (Use This for Flight)
+
+### UART CSV Mode - 50Hz Telemetry
+
+**Location:** `uart_production/`
+
+**Sender (Rocket):** `uart_csv_sender_rocket.ino`  
+**Receiver (Ground):** `uart_csv_receiver_ground.ino`
+
+**Why This is Best:**
+- ✅ Simple: 4-wire connection (VCC, GND, TX, RX)
+- ✅ Reliable: Hardware UART handles all framing
+- ✅ Fast: 115200 baud = 50Hz CSV updates
+- ✅ Debuggable: CSV data readable in Serial Monitor
+- ✅ Flight-Proven: Used in Nakuja rocket flights
+
+**XBee Config (XCTU):**
+```
+AP = 0   (Transparent Mode)
+BD = 7   (115200 baud)
+P3 = 1   (UART DOUT enabled)
+P4 = 1   (UART DIN enabled)
+ID = 7777
+HP = 0
+```
+
+**CSV Format:** `timestamp,state,altitude,velocity,accel_z,battery`  
+**Example:** `1250,1,145.2,340.0,15.2,4.1`
+
+---
 
 ## 🚀 Quick Start
 
@@ -62,17 +104,22 @@ D1 = 5   (SPI_ATTN)
 D2 = 1   (SPI_CLK)
 D3 = 1   (SPI_SSEL)
 D4 = 1   (SPI_MOSI)
-P2 = 1   (SPI_MISO)
-P3 = 0   (UART DOUT Disabled)
-P4 = 0   (UART DIN Disabled)
-ID = 7777
-HP = 0
-```
+P2 = 1Protocol Comparison Table
 
-**Expected Result:** Receiver prints telemetry at 10Hz with altitude climbing.
+| Feature | UART CSV (Production) | UART Binary | SPI Binary |
+|---------|----------------------|-------------|------------|
+| **Data Type** | Text (CSV) | Binary Struct | Binary Struct |
+| **Speed** | 115200 baud | 115200 baud | 1 MHz SPI |
+| **Wiring** | 4 wires | 4 wires | 7 wires |
+| **Complexity** | Very Simple | Medium | Complex |
+| **CPU Load** | Low | Medium | Low |
+| **Use Case** | **Flight Production** | Testing | High-Speed Testing |
+| **Max Update Rate** | 50 Hz | 20 Hz | 100+ Hz |
+| **Debugging** | Easy (CSV readable) | Hard (binary) | Very Hard (API frames) |
+| **XCTU Access** | ✅ Always available | ✅ Always available | ❌ Locked out (needs rescue) |
+| **Reliability** | ⭐⭐⭐⭐⭐ | ⭐⭐⭐⭐ | ⭐⭐⭐ |
 
----
-
+**Recommendation:** Use **UART CSV (Production)** for rocket flights. SPI is for testing/learning only.
 ### 4. SPI Recovery Tool (Troubleshooting)
 
 **Problem:** XBee is stuck in SPI mode, XCTU can't connect via USB.
@@ -170,20 +217,36 @@ Arduino 5V         -> XBee Shield 5V input
 - **SPI Troubleshooting:** See `../SPI_TROUBLESHOOTING.md`
 - **Main Documentation:** See `../README.md`
 
----
-
-## 🧪 Testing Workflow
-
-```
-1. Start Simple
-   └─> uart_simple_sender/receiver (text messages)
+--- (Text Messages)
+   └─> uart_simple_sender/receiver 
+       Goal: Verify basic XBee communication
+       Time: 10 minutes
 
 2. Verify Range
    └─> Test at 1m, 10m, 100m, 1km
+       Goal: Ensure antenna orientation correct
+       Time: 30 minutes
 
-3. Switch to Binary
-   └─> arduino_uart_receiver (binary struct over UART)
+3. Deploy Production Code ⭐
+   └─> uart_production/uart_csv_sender_rocket
+       uart_production/uart_csv_receiver_ground
+       Goal: Flight-ready 50Hz CSV telemetry
+       Time: Ready to fly!
 
+4. (Optional) Test Binary UART
+   └─> arduino_uart_receiver (struct over UART)
+       Goal: Compare binary vs CSV performance
+       Time: 20 minutes
+
+5. (Optional) Test High-Speed SPI
+   └─> spi_sender/receiver (ESP32 only)
+       Goal: Learn SPI protocol, 10Hz binary
+       Time: 2+ hours (complex debugging)
+
+6. If Stuck in SPI Mode
+   └─> spi_rescue_programmer
+       Goal: Restore UART access for XCTU
+       Time: 5 minutes
 4. Optimize for Speed
    └─> spi_sender/receiver (SPI mode)
 
