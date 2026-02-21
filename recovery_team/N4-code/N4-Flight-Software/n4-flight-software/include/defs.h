@@ -13,14 +13,15 @@
 /*!< at the same time */
 #define MQTT 0                                 /*!< Default to MQTT mode - can be overridden dynamically */
 #define TEST 1                                /*!< set to 1 to enable test mode - allows data transmission even when disarmed */
-#define XBEE 0                               /*!< set to 1 if using XBEE for telemetry transfer */
+#define XBEE 1                               /*!< set to 1 if using XBEE for telemetry transfer - can be overridden dynamically */
 
-// 🔥 DYNAMIC COMMUNICATION MODE CONTROL
+// 🔥 DYNAMIC COMMUNICATION MODE CONTROL (MQTT / BEACON / XBEE)
 extern bool use_mqtt_mode;                       /*!< Enable MQTT transmission */
 extern bool use_beacon_mode;                    /*!< Enable beacon transmission */
+extern bool use_xbee_mode;                      /*!< Enable XBee transmission (transparent UART mode) */
 extern bool auto_fallback_enabled;             /*!< Enable automatic fallback to beacon when MQTT fails */
 extern bool communication_mode_locked;        /*!< Lock mode changes during critical flight phases */
-extern bool is_system_armed;                 /*!< Global armed state for both MQTT and beacon modes */
+extern bool is_system_armed;                 /*!< Global armed state for all communication modes */
 
 // Communication failure detection
 #define MQTT_FAILURE_TIMEOUT 10000              /*!< 10 seconds without MQTT success = failure */
@@ -30,7 +31,9 @@ extern bool is_system_armed;                 /*!< Global armed state for both MQ
 // Command definitions for dynamic mode switching
 #define CMD_MQTT_MODE "MQTT_MODE"
 #define CMD_BEACON_MODE "BEACON_MODE"
+#define CMD_XBEE_MODE "XBEE_MODE"             /*!< Enable XBee transmission only */
 #define CMD_DUAL_MODE "DUAL_MODE"              /*!< Enable both MQTT and beacon simultaneously */
+#define CMD_TRIPLE_MODE "TRIPLE_MODE"          /*!< Enable MQTT, Beacon, AND XBee simultaneously */
 #define CMD_AUTO_FALLBACK_ON "AUTO_FALLBACK_ON"
 #define CMD_AUTO_FALLBACK_OFF "AUTO_FALLBACK_OFF"
 #define CMD_GET_MODE "GET_MODE"
@@ -42,10 +45,13 @@ extern bool is_system_armed;                 /*!< Global armed state for both MQ
 typedef struct {
     uint32_t last_mqtt_success;
     uint32_t last_beacon_success;
+    uint32_t last_xbee_success;
     uint32_t mqtt_failure_count;
     uint32_t beacon_failure_count;
+    uint32_t xbee_failure_count;
     bool mqtt_connection_stable;
     bool beacon_connection_stable;
+    bool xbee_connection_stable;
     const char* current_mode;
     const char* last_command_source;
 } communication_status_t;
@@ -53,7 +59,11 @@ typedef struct {
 extern communication_status_t comm_status;
 #define BAUDRATE        115200
 #define GPS_BAUD_RATE   9600                     /*!< baud rate for the GPS module. Change accordingly */
-#define XBEE_BAUD_RATE  9600                    /*!< baud rate for the XBEE HP module. Change accordingly */
+#define XBEE_BAUD_RATE  115200                  /*!< baud rate for the XBEE module (115200 for transparent CSV mode) */
+
+// XBee UART pins (Hardware Serial2)
+#define XBEE_RX_PIN     34                      /*!< ESP32 RX pin connected to XBee DOUT (Pin 2) */
+#define XBEE_TX_PIN     32                      /*!< ESP32 TX pin connected to XBee DIN (Pin 3) */
 
 /* debug parameters for use during testing - set to 0 for production */
 #define DEBUGGING 1                           /*!< allow debugging to terminal. Set to 0 pre flight to disable serial terminal printing and improve speed  */

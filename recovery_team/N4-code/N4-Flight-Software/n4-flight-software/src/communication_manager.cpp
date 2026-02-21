@@ -90,23 +90,39 @@ void CommunicationManager::init() {
     // Initialize communication status
     comm_status.last_mqtt_success = 0;
     comm_status.last_beacon_success = 0;
+    comm_status.last_xbee_success = 0;
     comm_status.mqtt_failure_count = 0;
     comm_status.beacon_failure_count = 0;
+    comm_status.xbee_failure_count = 0;
     comm_status.mqtt_connection_stable = false;
     comm_status.beacon_connection_stable = false;
+    comm_status.xbee_connection_stable = false;
     comm_status.current_mode = "STARTING";
     comm_status.last_command_source = "SYSTEM";
     
-    // Set default communication modes
+    // Set default communication modes based on compile-time flags
+    #if XBEE
+    use_mqtt_mode = false;
+    use_beacon_mode = false;
+    use_xbee_mode = true;  // XBee as default if enabled in defs.h
+    #elif MQTT
     use_mqtt_mode = true;
     use_beacon_mode = false;
+    use_xbee_mode = false;
+    #else
+    use_mqtt_mode = false;
+    use_beacon_mode = true;  // Beacon as fallback default
+    use_xbee_mode = false;
+    #endif
+    
     auto_fallback_enabled = true;
     communication_mode_locked = false;
     
     last_mode_check = millis();
     last_status_report = millis();
     
-    Serial.println("[COMM MANAGER] Initialized - MQTT mode enabled, auto-fallback active");
+    Serial.printf("[COMM MANAGER] Initialized - MQTT:%d Beacon:%d XBee:%d, auto-fallback active\n",
+                  use_mqtt_mode, use_beacon_mode, use_xbee_mode);
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Communication Manager initialized\r\n");
 }
 
@@ -122,8 +138,12 @@ void CommunicationManager::handleModeCommand(String command, String source) {
         setMQTTMode(source);
     } else if (command == "CMD_BEACON_MODE") {
         setBeaconMode(source);
+    } else if (command == "CMD_XBEE_MODE") {
+        setXBeeMode(source);
     } else if (command == "CMD_DUAL_MODE") {
         setDualMode(source);
+    } else if (command == "CMD_TRIPLE_MODE") {
+        setTripleMode(source);
     } else if (command == "CMD_AUTO_FALLBACK_ON") {
         auto_fallback_enabled = true;
         Serial.printf("[COMM MANAGER] Auto-fallback ENABLED by %s\n", source.c_str());
@@ -156,9 +176,10 @@ void CommunicationManager::handleModeCommand(String command, String source) {
 }
 
 void CommunicationManager::setMQTTMode(String source) {
-    bool was_mqtt = use_mqtt_mode && !use_beacon_mode;
+    bool was_mqtt = use_mqtt_mode && !use_beacon_mode && !use_xbee_mode;
     use_mqtt_mode = true;
     use_beacon_mode = false;
+    use_xbee_mode = false;  // Disable XBee
     comm_status.current_mode = "MQTT_ONLY";
     Serial.printf("[COMM MANAGER] Switched to MQTT-only mode by %s\n", source.c_str());
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Switched to MQTT-only mode\r\n");
@@ -169,9 +190,10 @@ void CommunicationManager::setMQTTMode(String source) {
 }
 
 void CommunicationManager::setBeaconMode(String source) {
-    bool was_beacon = use_beacon_mode && !use_mqtt_mode;
+    bool was_beacon = use_beacon_mode && !use_mqtt_mode && !use_xbee_mode;
     use_mqtt_mode = false;
     use_beacon_mode = true;
+    use_xbee_mode = false;  // Disable XBee
     comm_status.current_mode = "BEACON_ONLY";
     Serial.printf("[COMM MANAGER] Switched to Beacon-only mode by %s\n", source.c_str());
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Switched to Beacon-only mode\r\n");
@@ -181,13 +203,34 @@ void CommunicationManager::setBeaconMode(String source) {
     }
 }
 
+void CommunicationManager::setXBeeMode(String source) {
+    use_mqtt_mode = false;
+    use_beacon_mode = false;
+    use_xbee_mode = true;
+    comm_status.current_mode = "XBEE_ONLY";
+    Serial.printf("[COMM MANAGER] Switched to XBee-only mode by %s\n", source.c_str());
+    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Switched to XBee-only mode\r\n");
+    // XBee doesn't need WiFi reconfiguration - UART is always available
+}
+
 void CommunicationManager::setDualMode(String source) {
     use_mqtt_mode = true;
     use_beacon_mode = true;
+    use_xbee_mode = false;  // Dual = MQTT + Beacon only
     comm_status.current_mode = "DUAL_MODE";
     
     Serial.printf("[COMM MANAGER] Switched to Dual mode (MQTT + Beacon) by %s\n", source.c_str());
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Switched to dual communication mode\r\n");
+}
+
+void CommunicationManager::setTripleMode(String source) {
+    use_mqtt_mode = true;
+    use_beacon_mode = true;
+    use_xbee_mode = true;
+    comm_status.current_mode = "TRIPLE_MODE";
+    
+    Serial.printf("[COMM MANAGER] Switched to Triple mode (MQTT + Beacon + XBee) by %s\n", source.c_str());
+    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "Switched to triple communication mode\r\n");
 }
 
 void CommunicationManager::reportCurrentMode() {
@@ -209,14 +252,17 @@ void CommunicationManager::reportCurrentMode() {
                         (now - comm_status.last_mqtt_success) : 0;
     uint32_t beacon_age = (comm_status.last_beacon_success > 0) ? 
                           (now - comm_status.last_beacon_success) : 0;
+    uint32_t xbee_age = (comm_status.last_xbee_success > 0) ? 
+                        (now - comm_status.last_xbee_success) : 0;
     
-    Serial.printf("[COMM STATUS] Mode: %s%s | MQTT: %s (%lums ago, %d fails) | Beacon: %s (%lums ago, %d fails)\n",
+    Serial.printf("[COMM STATUS] Mode: %s%s | MQTT: %s (%lums ago, %d fails) | Beacon: %s (%lums ago, %d fails) | XBee: %s (%lums ago, %d fails)\n",
                   mode.c_str(), status.c_str(),
                   use_mqtt_mode ? "ON" : "OFF", mqtt_age, comm_status.mqtt_failure_count,
-                  use_beacon_mode ? "ON" : "OFF", beacon_age, comm_status.beacon_failure_count);
+                  use_beacon_mode ? "ON" : "OFF", beacon_age, comm_status.beacon_failure_count,
+                  use_xbee_mode ? "ON" : "OFF", xbee_age, comm_status.xbee_failure_count);
 }
 
-void CommunicationManager::updateTransmissionStatus(bool mqtt_success, bool beacon_success) {
+void CommunicationManager::updateTransmissionStatus(bool mqtt_success, bool beacon_success, bool xbee_success) {
     uint32_t now = millis();
     
     if (mqtt_success && use_mqtt_mode) {
@@ -233,14 +279,24 @@ void CommunicationManager::updateTransmissionStatus(bool mqtt_success, bool beac
         comm_status.beacon_failure_count++;
     }
     
+    if (xbee_success && use_xbee_mode) {
+        comm_status.last_xbee_success = now;
+        comm_status.xbee_failure_count = 0;
+    } else if (use_xbee_mode) {
+        comm_status.xbee_failure_count++;
+    }
+    
     // Update connection stability
     bool mqtt_stable = !use_mqtt_mode || 
                        (comm_status.mqtt_failure_count < MQTT_RETRY_ATTEMPTS);
     bool beacon_stable = !use_beacon_mode || 
                          (comm_status.beacon_failure_count < MQTT_RETRY_ATTEMPTS);
+    bool xbee_stable = !use_xbee_mode || 
+                       (comm_status.xbee_failure_count < MQTT_RETRY_ATTEMPTS);
     
     comm_status.mqtt_connection_stable = mqtt_stable;
     comm_status.beacon_connection_stable = beacon_stable;
+    comm_status.xbee_connection_stable = xbee_stable;
 }
 
 void CommunicationManager::checkAutoFallback() {
@@ -318,12 +374,16 @@ void CommunicationManager::update() {
 }
 
 String CommunicationManager::getCurrentMode() {
-    if (use_mqtt_mode && use_beacon_mode) {
+    if (use_mqtt_mode && use_beacon_mode && use_xbee_mode) {
+        return "TRIPLE_MODE";
+    } else if (use_mqtt_mode && use_beacon_mode) {
         return "DUAL_MODE";
     } else if (use_mqtt_mode) {
         return "MQTT_ONLY";
     } else if (use_beacon_mode) {
         return "BEACON_ONLY";
+    } else if (use_xbee_mode) {
+        return "XBEE_ONLY";
     } else {
         return "NO_COMMS";
     }
@@ -335,6 +395,10 @@ bool CommunicationManager::isMQTTActive() {
 
 bool CommunicationManager::isBeaconActive() {
     return use_beacon_mode;
+}
+
+bool CommunicationManager::isXBeeActive() {
+    return use_xbee_mode;
 }
 
 bool CommunicationManager::isModeLocked() {

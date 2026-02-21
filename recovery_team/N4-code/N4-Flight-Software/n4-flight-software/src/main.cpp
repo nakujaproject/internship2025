@@ -47,14 +47,18 @@
 
 /* state machine variables*/
 uint8_t operation_mode = 0;                                         /*!< Tells whether software is in safe or flight mode - FLIGHT_MODE=1, SAFE_MODE=0 */
-bool is_system_armed = false;                                       /*!< Global armed state for both MQTT and beacon modes */
+bool is_system_armed = false;                                       /*!< Global armed state for all communication modes */
 
 // 🔥 ISOLATED COMMUNICATION SYSTEM - Global variables for independent mode control
 bool use_mqtt_mode = true;                                          /*!< Enable MQTT transmission - starts with MQTT mode */
 bool use_beacon_mode = false;                                       /*!< Enable beacon transmission - starts disabled */
+bool use_xbee_mode = false;                                         /*!< Enable XBee transmission - controlled by XBEE flag in defs.h */
 bool auto_fallback_enabled = true;                                  /*!< Enable automatic fallback to beacon when MQTT fails */
 bool communication_mode_locked = false;                             /*!< Lock mode changes during critical flight phases */
 communication_status_t comm_status = {0};                           /*!< Communication status tracking */
+
+// XBee Hardware Serial (UART1 - GPS uses UART2)
+HardwareSerial XBeeSerial(1);  // Use UART1 for XBee (GPS is on UART2)
 
 /* non-task function prototypes definition */
 void initDynamicWIFI();
@@ -527,6 +531,7 @@ void espnowCommandTask(void* pvParameters) {
             // Handle communication mode commands
             if (strncmp(cmdBuffer, "CMD_MQTT_MODE", 13) == 0 ||
                 strncmp(cmdBuffer, "CMD_BEACON_MODE", 15) == 0 ||
+                strncmp(cmdBuffer, "CMD_XBEE_MODE", 13) == 0 ||
                 strncmp(cmdBuffer, "CMD_AUTO_FALLBACK", 17) == 0 ||
                 strncmp(cmdBuffer, "CMD_GET_MODE", 12) == 0) {
                 comm_manager.handleModeCommand(String(cmdBuffer), "ESP_NOW");
@@ -759,6 +764,7 @@ void mqtt_command_processor(const char* topic, const char* payload) {
  TaskHandle_t checkFlightStateTaskHandle;
  TaskHandle_t flightStateCallbackTaskHandle;
  TaskHandle_t MQTT_TransmitTelemetryTaskHandle;
+ TaskHandle_t XBee_TransmitTelemetryTaskHandle;
  TaskHandle_t kalmanFilterTaskHandle;
  
  TaskHandle_t debugToTerminalTaskHandle;
@@ -1878,22 +1884,32 @@ void debugToTerminalTask(void* pvParameters){
         
         // Only transmit via beacon if beacon mode is active and MQTT mode is NOT
         bool beacon_success = false;
-        if (comm_manager.isBeaconActive() && !comm_manager.isMQTTActive()) {
+        bool beaconActive = comm_manager.isBeaconActive();
+        bool mqttActive = comm_manager.isMQTTActive();
+        
+        if (beaconActive && !mqttActive) {
             if (is_system_armed || TEST) {
                 beacon_success = transmitter.sendBeacon(telemetry_packet_buffer, strlen(telemetry_packet_buffer));
                 if (beacon_success) {
-                    debugln("[BEACON TX] " + String(telemetry_packet_buffer));
+                    debugln("[BEACON TX] ✓ Sent: Rec#" + String(telemetry_received_packet.record_number));
                 } else {
-                    debugln("[BEACON TX] Failed to send beacon");
+                    debugln("[BEACON TX] ✗ Failed to send beacon");
                 }
             } else {
-                debugln("[BEACON DEBUG] " + String(telemetry_packet_buffer));
+                debugln("[BEACON DEBUG] (Not armed/TEST): Rec#" + String(telemetry_received_packet.record_number));
                 beacon_success = true; // Not a failure, just not sending due to arm state
+            }
+        } else {
+            if (!beaconActive) {
+                Serial.println("[BEACON DISABLED] Beacon mode not active");
+            }
+            if (mqttActive) {
+                Serial.println("[BEACON BLOCKED] MQTT mode active");
             }
         }
         
         // Update communication manager with beacon transmission status
-        comm_manager.updateTransmissionStatus(false, beacon_success);
+        comm_manager.updateTransmissionStatus(false, beacon_success, false);
         
         vTaskDelay(pdMS_TO_TICKS(CONSUME_TASK_DELAY)); // FIX: use pdMS_TO_TICKS
     }
@@ -2037,7 +2053,77 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
             }
         }
         // Update communication manager with MQTT transmission status
-        comm_manager.updateTransmissionStatus(mqtt_success, false);
+        comm_manager.updateTransmissionStatus(mqtt_success, false, false);
+
+        vTaskDelay(CONSUME_TASK_DELAY/ portTICK_PERIOD_MS);
+    }
+}
+
+/*!****************************************************************************
+ * @brief XBee Telemetry Transmission Task (CSV Format, Transparent Mode)
+ * 
+ * This task sends telemetry via XBee using transparent UART mode.
+ * Data format: CSV string with newline termination (same as MQTT)
+ * Transmission rate: Same as MQTT (controlled by queue)
+ *******************************************************************************/
+void XBee_TransmitTelemetry(void* pvParameters) {
+    telemetry_type_t telemetry_received_packet;
+
+    while(1) {
+        xQueueReceive(telemetry_data_queue_handle, &telemetry_received_packet, portMAX_DELAY);
+
+        // Create comprehensive 25-field CSV string (same format as MQTT)
+        sprintf(telemetry_packet_buffer,
+                "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f,%d,%.2f,%.2f\n",
+                telemetry_received_packet.record_number,    // 0
+                telemetry_received_packet.operation_mode,   // 1  
+                telemetry_received_packet.state,            // 2
+                telemetry_received_packet.acc_data.ax,      // 3
+                telemetry_received_packet.acc_data.ay,      // 4
+                telemetry_received_packet.acc_data.az,      // 5
+                telemetry_received_packet.acc_data.pitch,   // 6
+                telemetry_received_packet.acc_data.roll,    // 7
+                telemetry_received_packet.gyro_data.gx,     // 8
+                telemetry_received_packet.gyro_data.gy,     // 9
+                telemetry_received_packet.gyro_data.gz,     // 10
+                gps_packet.latitude,                        // 11
+                gps_packet.longitude,                       // 12
+                gps_packet.gps_altitude,                    // 13
+                gps_packet.time,                            // 14 - GPS time
+                altimeter_packet.pressure,                  // 15
+                altimeter_packet.temperature,               // 16
+                altimeter_packet.rel_altitude,              // 17
+                altimeter_packet.velocity,                  // 18 - velocity
+                telemetry_received_packet.drogue_pin_state, // 19
+                telemetry_received_packet.main_chute_pin_state, // 20
+                telemetry_received_packet.battery_voltage,  // 21 - battery voltage
+                telemetry_received_packet.wifi_rssi,        // 22 - RSSI (0 for XBee mode)
+                altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
+                altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
+                );
+        
+        // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
+        updateGlobalTelemetryBuffer(telemetry_packet_buffer);
+
+        // 🔥 ISOLATED XBEE TRANSMISSION - Only transmit via XBee when XBee mode is active
+        bool xbee_success = false;
+        if (comm_manager.isXBeeActive()) {
+            // Only send data if armed OR if in test mode
+            if (is_system_armed || TEST) {
+                // XBee transparent mode: Just send the CSV string with println
+                XBeeSerial.println(telemetry_packet_buffer);
+                Serial.println("[XBEE TX] ✓ Sent: Rec#" + String(telemetry_received_packet.record_number));
+                xbee_success = true;
+            } else {
+                Serial.println("[XBEE BLOCKED] System not armed and TEST mode disabled");
+                xbee_success = true; // Not a failure, just not sending due to arm state
+            }
+        } else {
+            Serial.println("[XBEE DISABLED] XBee mode not active");
+        }
+        
+        // Update communication manager with XBee transmission status
+        comm_manager.updateTransmissionStatus(false, false, xbee_success);
 
         vTaskDelay(CONSUME_TASK_DELAY/ portTICK_PERIOD_MS);
     }
@@ -2235,6 +2321,24 @@ void xCreateAllTasks() {
     }
     #endif
 
+    /* 🛡️ XBEE TRANSMIT TELEMETRY - controlled by comm_manager (only if XBEE enabled) */
+    #if XBEE
+    Serial.println("[XBEE TASK] Attempting to create XBee task...");
+    BaseType_t xb = xTaskCreatePinnedToCore(XBee_TransmitTelemetry, "xbee_telemetry", STACK_SIZE*4, NULL, 2, &XBee_TransmitTelemetryTaskHandle, 1);
+    if(xb == pdPASS){
+        tasks_created++;
+        debugln("[+]XBee transmit task created OK");
+        Serial.printf("[XBEE TASK] Task created successfully! use_xbee_mode=%d\n", use_xbee_mode);
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]XBee transmit task created OK\r\n");
+    } else {
+        tasks_failed++;
+        debugln("[-]XBee transmit task failed to create");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]XBee transmit task failed to create\r\n");
+    }
+    #else
+    debugln("[+] XBee transmit task skipped - XBEE=0 in defs.h");
+    #endif
+
     /* 🛡️ KALMAN FILTER 2D TASK - essential for altitude estimation */
     BaseType_t kf2d = xTaskCreatePinnedToCore(taskKalman2D, "Kalman2D", STACK_SIZE*4, NULL, 2, NULL, 1);
     if(kf2d == pdPASS) {
@@ -2354,6 +2458,41 @@ void xCreateAllTasks() {
 void setup() {
     /* initialize serial */
     Serial.begin(BAUDRATE);
+    
+    // Initialize XBee UART (always initialize, controlled by comm_manager)
+    XBeeSerial.begin(XBEE_BAUD_RATE, SERIAL_8N1, XBEE_RX_PIN, XBEE_TX_PIN);
+    debugln("[+] XBee UART initialized on Serial1/UART1 (RX=34, TX=32, 115200 baud)");
+    Serial.printf("[XBEE INIT] UART1 - Pins: RX=%d, TX=%d, Baud=%d\n", XBEE_RX_PIN, XBEE_TX_PIN, XBEE_BAUD_RATE);
+    
+    // Verify UART is functional
+    if (XBeeSerial) {
+        Serial.println("[XBEE CHECK] UART1 is available ✓");
+        
+        // Send test message to verify XBee connection
+        XBeeSerial.println("XBEE_TEST_STARTUP");
+        Serial.println("[XBEE TEST] Sent startup test message");
+        delay(100);
+        
+        // Flush TX buffer to ensure data is sent
+        XBeeSerial.flush();
+        Serial.println("[XBEE TEST] TX buffer flushed - data transmitted");
+        
+        // Check if any data received (XBee in transparent mode won't respond, but this checks RX)
+        if (XBeeSerial.available()) {
+            Serial.print("[XBEE RX] Unexpected data received: ");
+            while (XBeeSerial.available()) {
+                Serial.write(XBeeSerial.read());
+            }
+            Serial.println();
+        } else {
+            Serial.println("[XBEE RX] No echo (expected in transparent mode)");
+        }
+        
+        Serial.println("[XBEE STATUS] ✓ Initialization complete - check base station for received data");
+    } else {
+        Serial.println("[XBEE ERROR] ❌ UART1 initialization FAILED!");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, system_log_file, "XBee UART1 init failed\r\n");
+    }
 
     debugln("=========INITIALIZING FLIGHT COMPUTER============");
     LED_init();

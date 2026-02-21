@@ -48,10 +48,22 @@ public:
     void setBeaconMode(String source);
     
     /**
+     * @brief Set communication to XBee mode only
+     * @param source Source of the command
+     */
+    void setXBeeMode(String source);
+    
+    /**
      * @brief Enable both MQTT and Beacon modes simultaneously
      * @param source Source of the command
      */
     void setDualMode(String source);
+    
+    /**
+     * @brief Enable MQTT, Beacon, AND XBee modes simultaneously
+     * @param source Source of the command
+     */
+    void setTripleMode(String source);
     
     /**
      * @brief Report current communication mode and status
@@ -62,8 +74,9 @@ public:
      * @brief Update transmission status for both modes
      * @param mqtt_success True if MQTT transmission was successful
      * @param beacon_success True if beacon transmission was successful
+     * @param xbee_success True if XBee transmission was successful
      */
-    void updateTransmissionStatus(bool mqtt_success, bool beacon_success);
+    void updateTransmissionStatus(bool mqtt_success, bool beacon_success, bool xbee_success = false);
     
     /**
      * @brief Check if automatic fallback should be triggered
@@ -103,6 +116,12 @@ public:
      * @return True if Beacon mode is active
      */
     bool isBeaconActive();
+    
+    /**
+     * @brief Check if XBee mode is currently active
+     * @return True if XBee mode is active
+     */
+    bool isXBeeActive();
     
     /**
      * @brief Check if communication mode is locked
