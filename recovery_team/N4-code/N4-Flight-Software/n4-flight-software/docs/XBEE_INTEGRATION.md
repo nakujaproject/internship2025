@@ -231,8 +231,10 @@ void parseCSV(String data) {
 ### Range
 
 - **XBee Pro S1**: Up to 1.6 km (1 mile) line of sight
-- **XBee Pro S2B**: Up to 3.2 km (2 miles) with high-gain antenna
-- **Recommendation**: Use directional Yagi antenna at ground station for maximum range
+- **XBee Pro 900HP**: Up to 28 km (line of sight) with 915 MHz antennas
+- **Antenna (rocket)**: 915 MHz duck antenna
+- **Antenna (ground station)**: 915 MHz duck antenna
+- Both ends use the same antenna type — no directional tracking required
 
 ### Reliability
 
@@ -329,7 +331,7 @@ Arm via command, launch, monitor telemetry throughout flight.
 
 - [ ] XBees configured in XCTU (AP=0, BD=7)
 - [ ] Wiring verified (continuity test)
-- [ ] Ground station antenna oriented toward launch site
+- [ ] 915 MHz duck antenna securely connected on both rocket and ground station XBees
 - [ ] Serial monitor open and receiving test data
 - [ ] Battery voltage sufficient (>11V for reliable transmission)
 

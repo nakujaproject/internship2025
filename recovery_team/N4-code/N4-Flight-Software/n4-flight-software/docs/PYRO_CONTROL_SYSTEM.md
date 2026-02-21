@@ -2,21 +2,27 @@
 
 ## Overview
 
-The N4 flight computer fires two ejection charges via software-controlled MOSFET outputs:
+The N4 flight computer triggers two ejection events via software-controlled MOSFET outputs.
+
+**Ignition mechanism**: each pyro channel passes current through a **nichrome wire** embedded in **crimson powder** (pyrotechnic igniter compound). The resistive heating of the nichrome wire ignites the crimson powder, which in turn fires the ejection charge.
+
+**Why PWM?** Running the nichrome wire at full supply voltage would burn it out in a single use. PWM limits the average current to a level that heats the wire enough to reliably ignite the crimson powder while keeping the wire intact for reuse.
 
 | Channel | Event | GPIO | PWM Channel |
 |---------|-------|------|-------------|
 | Drogue | Apogee + delay | 25 | LEDC channel 3 |
 | Main chute | Descent to 500 m AGL | 12 | LEDC channel 4 |
 
-Both channels use **PWM (Pulse Width Modulation)** to scale the supply voltage down to a safe ejection level, rather than switching the full supply voltage directly.
-
 ---
 
 ## Voltage Scaling via PWM
 
-The pyro outputs are driven from a ~15 V LiPo supply, but the ejection charges are specified for 6 V.  
-PWM duty cycle is calculated to approximate the target voltage:
+The pyro outputs are driven from a ~15 V LiPo supply. Applying the full 15 V directly to the nichrome wire would overheat and destroy it after a single firing. PWM reduces the effective voltage seen by the wire to a controlled level that:
+
+1. **Heats the nichrome wire** to the ignition temperature of the crimson powder
+2. **Avoids burning out the wire**, preserving it for re-use in ground tests and future flights
+
+PWM duty cycle is calculated to deliver the target average voltage:
 
 ```cpp
 // From include/defs.h:
@@ -32,7 +38,7 @@ PWM duty cycle is calculated to approximate the target voltage:
 
 $$\text{duty} = \frac{V_{target}}{V_{supply}} \times (2^{resolution} - 1) = \frac{6}{15} \times 255 = 102$$
 
-The PWM frequency of 500 Hz is intentionally low — MOSFETs switch this easily and the RC time constant of the charge circuit is much longer.
+The PWM frequency of 500 Hz is intentionally low — MOSFETs switch this easily and the thermal time constant of the nichrome wire is much longer than the PWM period, so the wire experiences the average heating effect rather than discrete pulses.
 
 The `include/pwm_voltage_control.h` header provides helper functions to configure and trigger the LEDC channels.
 
@@ -47,7 +53,7 @@ Defined in `include/defs.h`:
 #define MAIN_CHUTE_EJECT_PIN 12     // Main chute ejection PWM output
 ```
 
-Both pins drive N-channel MOSFETs whose drains are connected to the pyro bridgewire circuit.
+Both pins drive N-channel MOSFETs whose drains are connected to the **nichrome wire igniter circuit** (nichrome wire in series with the crimson powder charge).
 
 ---
 
@@ -170,11 +176,11 @@ See [PWM_CONFIG_COMMANDS.md](PWM_CONFIG_COMMANDS.md) for the full command set an
 
 ## Pre-Flight Electrical Checks
 
-> ⚠️ **Never install igniter bridgewires while the flight computer is powered.**
+> ⚠️ **Never install nichrome wire igniters while the flight computer is powered.**
 
 | Check | Method |
 |-------|--------|
-| Continuity (no igniter) | Multimeter across pyro terminals — expect > 1 MΩ with charge installed, shorts indicate fault |
+| Nichrome wire continuity | Multimeter across igniter terminals — expect 1–5 Ω for an intact nichrome wire; open circuit indicates broken wire |
 | PWM output voltage | Oscilloscope on GPIO 25/12 — verify ~40% duty cycle at 500 Hz when triggered in test |
 | Supply voltage | > 12 V under load required for reliable ignition |
 | DROGUE_DEPLOY_FLAG | Verify = 0 on boot (not already deployed) |

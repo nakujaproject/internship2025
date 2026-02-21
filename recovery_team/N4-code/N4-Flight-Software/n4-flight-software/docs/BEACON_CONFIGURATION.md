@@ -16,13 +16,13 @@ Separately, **ESP-NOW** is used for the uplink direction (ground → rocket comm
 | Metric | Value |
 |--------|-------|
 | Tested range | **4 km line-of-sight** |
-| Antenna (rocket) | Omni, 2 dBi |
-| Antenna (ground) | Directional / Yagi recommended |
+| Antenna (rocket) | 2.4 GHz duck antenna + signal amplifier |
+| Antenna (ground) | Patch antenna + signal amplifier |
 | Channel | 1 (2.412 GHz) |
 | Frequency band | 2.4 GHz ISM |
 | Typical altitude envelope | up to ~3 km AGL |
 
-> **Range is antenna-limited**, not software-limited. With a proper Yagi at the ground station, 10+ km is achievable on ESP32.
+> **Range is antenna-limited**, not software-limited. The patch antenna and signal amplifier at the ground station maximise received signal strength; higher-gain directional antennas can extend range further.
 
 ---
 
@@ -30,12 +30,14 @@ Separately, **ESP-NOW** is used for the uplink direction (ground → rocket comm
 
 ### Rocket Side
 - ESP32 DevKit (any 38-pin variant)
-- External 2.4 GHz antenna connected to the ESP32 antenna port (U.FL or PCB trace)
+- **2.4 GHz duck antenna** connected to the ESP32 antenna port (U.FL or PCB trace)
+- **Signal amplifier** inline between the ESP32 and the duck antenna to boost transmit power
 - Clear RF path — do not shield the antenna inside a metal airframe section
 
 ### Ground Station Side
 - ESP32 DevKit
-- **Directional antenna** strongly recommended for range — a 9 dBi Yagi pointed at the flight path
+- **Patch antenna** (2.4 GHz) for directional gain toward the flight path
+- **Signal amplifier** inline on the receive path to improve sensitivity at range
 - USB cable to laptop running the Python telemetry server
 
 ---

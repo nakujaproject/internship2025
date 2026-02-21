@@ -36,7 +36,7 @@ The flight computer connects as a WiFi Station (STA mode). The MQTT broker runs 
 | Protocol | ESP-NOW + raw 802.11 management frames |
 | Transport | IEEE 802.11 (2.4 GHz), channel 1 |
 | Max payload | 256 bytes |
-| Proven range | 4 km LOS (tested with directional antenna) |
+| Proven range | 4 km LOS (duck antenna + amplifier on rocket; patch antenna + amplifier at ground) |
 | Rocket MAC | `ROCKET_MAC` in `defs.h` |
 | Base MAC | `BASE_MAC` in `defs.h` |
 
