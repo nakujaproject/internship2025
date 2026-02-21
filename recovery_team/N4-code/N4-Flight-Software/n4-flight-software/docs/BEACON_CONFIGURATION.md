@@ -34,6 +34,10 @@ Separately, **ESP-NOW** is used for the uplink direction (ground → rocket comm
 - **Signal amplifier** inline between the ESP32 and the duck antenna to boost transmit power
 - Clear RF path — do not shield the antenna inside a metal airframe section
 
+![Beacon Hardware — Rocket Side](images/xbee/beacon_image.png)
+
+*Rocket-side beacon hardware: ESP32 with 2.4 GHz duck antenna and inline signal amplifier.*
+
 ### Ground Station Side
 - ESP32 DevKit
 - **Patch antenna** (2.4 GHz) for directional gain toward the flight path

@@ -20,6 +20,27 @@ ESP32 3.3V    →  XBee Pin 1 (VCC)
 ESP32 GND     →  XBee Pin 10 (GND)
 ```
 
+![XBee Module Pinout](images/xbee/xbee_pinout.jpg)
+
+---
+
+### XBee Shield — USB / XBee Mode Switch
+
+When using an **XBee Arduino Shield**, a physical slide switch on the board selects how the UART is routed:
+
+| Switch Position | UART Routing | When to Use |
+|-----------------|--------------|-------------|
+| **USB** | Shield UART ↔ USB–Serial adapter | Configuring the XBee in XCTU on a PC |
+| **XBEE** (or MICRO) | Shield UART ↔ Host microcontroller | Normal flight operation with ESP32 |
+
+> **⚠️ Critical workflow**: Set switch to **USB** before launching XCTU. After saving all XBee settings, flip the switch back to **XBEE** before connecting to the flight computer — leaving it in USB position will prevent the ESP32 from communicating with the radio.
+
+![XBee Shield Module — Mode Switch](images/xbee/XBEE_Shield_Module.jpeg)
+
+*The slide switch (highlighted) on the XBee Shield toggles between USB passthrough for XCTU configuration and microcontroller UART for flight operation.*
+
+---
+
 ### XCTU Settings (CRITICAL - Must Configure Before Flight)
 
 Configure both XBees (rocket + ground station) with these **exact** settings:
@@ -298,6 +319,10 @@ Serial.println(esp_get_free_heap_size());
 
 Upload to flight computer, connect XBee, open ground station serial monitor.
 
+![First XBee Transmission — Serial Monitor Output](images/xbee/First_Xbee%20Transmission.PNG)
+
+*Successful first transmission: raw CSV telemetry appearing in the ground station serial monitor confirming end-to-end radio link.*
+
 ### 2. Command Test
 
 Send via ESP-NOW or Serial:
@@ -311,6 +336,10 @@ Should see:
 [COMM MANAGER] Switched to XBee-only mode
 [XBEE TX] 1,0,0,0.01,0.02,9.81,...
 ```
+
+![Sent Packet Screenshot — Live Telemetry Stream](images/xbee/Sent%20packet%20screenshot.PNG)
+
+*Live packet stream in XCTU or serial monitor: each line is one 25-field CSV telemetry frame.*
 
 ### 3. Range Test
 
