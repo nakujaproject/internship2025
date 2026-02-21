@@ -98,19 +98,7 @@ typedef enum {
 
 **State transition logic for ejection**:
 
-```
-APOGEE detected
-  └─ Wait DROGUE_DEPLOY_DELAY_MS (1500 ms)
-       └─ → DROGUE_DEPLOY
-            ├─ Fire DROGUE_PIN (PWM, 5 s)
-            ├─ Set DROGUE_DEPLOY_FLAG = 1
-            └─ → DROGUE_DESCENT
-                  └─ Kalman altitude < MAIN_EJECTION_HEIGHT (500 m AGL)
-                       └─ → MAIN_DEPLOY
-                            ├─ Fire MAIN_CHUTE_EJECT_PIN (PWM, 5 s)
-                            ├─ Set MAIN_CHUTE_EJECT_FLAG = 1
-                            └─ → MAIN_DESCENT
-```
+![N4 Pyro Ejection Sequence](../diagrams/output/pyro_sequence_diagram.png)
 
 ---
 

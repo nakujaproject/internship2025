@@ -399,23 +399,7 @@ Defined in `n4-flight-software/src/states.h`:
 
 #### State transition conditions
 
-```
-PRE_FLIGHT_GROUND
-  └─ altitude rises > 10 m (LAUNCH_DETECTION_THRESHOLD) within 20 m window
-       └─► POWERED_FLIGHT
-             └─ deceleration detected (motor burnout)
-                  └─► COASTING
-                        └─ Kalman vertical velocity reverses (APOGEE_DETECTION_THRESHOLD = 3 m)
-                             └─► APOGEE
-                                   └─ +1500 ms delay (DROGUE_DEPLOY_DELAY_MS)
-                                        └─► DROGUE_DEPLOY — fires GPIO 25 (5 s PWM)
-                                              └─► DROGUE_DESCENT
-                                                    └─ filtered altitude < 500 m AGL
-                                                         └─► MAIN_DEPLOY — fires GPIO 12 (5 s PWM)
-                                                               └─► MAIN_DESCENT
-                                                                     └─ near-zero velocity
-                                                                          └─► POST_FLIGHT_GROUND
-```
+![N4 Flight State Machine](n4-flight-software/diagrams/output/state_machine_diagram.png)
 
 Apogee and launch detection use **Kalman-filtered altitude and velocity** when `USE_KALMAN_FOR_STATE_DETECTION 1` (default). The `ARM` command requires filtered altitude > 50 m AGL (`ARM_ALTITUDE_THRESHOLD`) to prevent pad arming.
 

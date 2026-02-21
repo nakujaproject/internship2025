@@ -7,12 +7,7 @@ Unlike standard WiFi, the rocket does **not** connect to a network — it inject
 
 Separately, **ESP-NOW** is used for the uplink direction (ground → rocket commands) because it provides confirmed, unicast delivery without needing an access point.
 
-```
-ROCKET                               GROUND STATION
-  │                                        │
-  │── Raw 802.11 Beacon Frame ────────────►│  (telemetry, no ACK)
-  │◄── ESP-NOW Unicast Packet ─────────────│  (commands, ACK'd)
-```
+![N4 Beacon Communication Link](../diagrams/output/beacon_comms_diagram.png)
 
 ---
 

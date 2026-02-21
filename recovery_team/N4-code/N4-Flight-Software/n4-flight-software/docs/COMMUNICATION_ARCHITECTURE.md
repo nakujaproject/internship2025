@@ -5,30 +5,7 @@
 The N4 flight computer implements a **hybrid, multi-mode communication system** built on FreeRTOS tasks.  
 Three independent physical layers can operate simultaneously or be switched on the fly via runtime commands.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    N4 FLIGHT COMPUTER (ESP32)                    │
-│                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │  MQTT Task   │  │ Beacon Task  │  │   XBee Task          │   │
-│  │  (WiFi STA)  │  │ (802.11 raw) │  │ (UART1, transparent) │   │
-│  └──────┬───────┘  └──────┬───────┘  └──────────┬───────────┘   │
-│         │                 │                      │               │
-│  ┌──────▼─────────────────▼──────────────────────▼───────────┐  │
-│  │              CommunicationManager                          │  │
-│  │   use_mqtt_mode | use_beacon_mode | use_xbee_mode         │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-         │                  │                       │
-    WiFi/MQTT          ESP-NOW +              XBee Pro 900HP
-    Broker             Raw 802.11             900 MHz UART
-         │                  │                       │
-    ┌────▼────┐        ┌────▼────┐            ┌─────▼──────┐
-    │  MQTT   │        │  Base   │            │  Base Stn  │
-    │ Broker  │        │ Station │            │  ESP32     │
-    │(Laptop) │        │ ESP32   │            │(XBee+BT)   │
-    └─────────┘        └─────────┘            └────────────┘
-```
+![N4 System Architecture](../diagrams/output/architecture_diagram.png)
 
 ---
 

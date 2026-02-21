@@ -121,31 +121,7 @@ Switch modes at runtime with serial commands: `XBEE_MODE`, `BEACON_MODE`, `MQTT_
 
 ## Flight State Machine
 
-```
-PRE_FLIGHT_GROUND (0)
-    │ launch detected (>10 m rise)
-    ▼
-POWERED_FLIGHT (1)
-    │ motor burnout / decel
-    ▼
-COASTING (2)
-    │ apogee detected (velocity reversal)
-    ▼
-APOGEE (3)
-    │ +1500 ms delay
-    ▼
-DROGUE_DEPLOY (4)  ──── fires GPIO 25 (5 s PWM)
-    ▼
-DROGUE_DESCENT (5)
-    │ altitude < 500 m AGL
-    ▼
-MAIN_DEPLOY (6)  ──── fires GPIO 12 (5 s PWM)
-    ▼
-MAIN_DESCENT (7)
-    │ near-zero velocity
-    ▼
-POST_FLIGHT_GROUND (8)
-```
+![N4 Flight State Machine](diagrams/output/state_machine_diagram.png)
 
 ---
 
