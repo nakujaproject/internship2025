@@ -7,6 +7,51 @@
 ### Code documentation
 The complete code documentation can be found here [N4 Flight Software Documentation](https://nakujaproject.com/N4-Flight-Software/)
 
+---
+
+## Table of Contents
+
+1. [Hardware Overview](#hardware-overview)
+2. [Flight Software Requirements](#n4-flight-software-requirements)
+3. [Communication Architecture](#communication-architecture)
+4. [Tasks and Task Creation](#tasks-and-task-creation)
+5. [Telemetry Packet Structure](#telemetry-packet-structure)
+6. [Data Logging and Storage](#data-logging-and-storage)
+7. [GPS Operations](#gps-operations)
+8. [State Machine](#state-machine-logic-and-operation)
+9. [IMU](#imu)
+10. [Data Filtering](#data-filtering)
+11. [Pyro / Ejection Control](#pyro--ejection-control)
+12. [Utility Scripts](#utility-scripts)
+13. [Documentation Index](#documentation-index)
+14. [References](#references-and-error-fixes)
+
+---
+
+## Hardware Overview
+
+| Component | Model / Detail |
+|-----------|---------------|
+| Microcontroller | ESP32 DevKit (38-pin) |
+| IMU | MPU6050 (I2C, 0x68) — accel ±16 g, gyro ±1000 °/s |
+| Barometer | BMP280 — altitude and temperature |
+| GPS | UART module, 9600 baud, pins 16/17 |
+| Long-range radio | XBee Pro 900HP — 900 MHz, UART1, pins 32/34 |
+| Short-range radio | ESP32 internal WiFi — Beacon (ESP-NOW + raw 802.11) |
+| WiFi/MQTT | ESP32 internal WiFi — 2.4 GHz station mode |
+| SD card | SPI, CS GPIO 26, FAT32 |
+| External flash | WINBOND W25Q32JVSIQ — 32 Mbit SPI NOR |
+| Drogue pyro | GPIO 25, LEDC channel 3, 500 Hz PWM |
+| Main chute pyro | GPIO 12, LEDC channel 4, 500 Hz PWM |
+| Supply voltage | ~15 V LiPo |
+| Green LED | GPIO 15 |
+| Red LED | GPIO 4 |
+| Buzzer | GPIO 33 |
+| Arm switch | GPIO 27 (remote) |
+
+> Pin assignments are defined in `n4-flight-software/include/defs.h`.
+
+---
 
 ### N4 Flight software requirements 
 
@@ -74,13 +119,89 @@ b) Transmit video stream to ground**
 
 ---
 
-### 
+The firmware runs under **FreeRTOS** on the ESP32's dual cores. Tasks are created in `src/main.cpp` via `xCreateAllTasks()`.
+
+| Task Name | Core | Priority | Stack | Purpose |
+|-----------|------|----------|-------|---------|
+| `altimeter_task` | 0 | 3 | STACK_SIZE | Read BMP280 → altimeter queue |
+| `gyroscope_task` | 0 | 3 | STACK_SIZE | Read MPU6050 → gyroscope queue |
+| `gps_task` | 0 | 2 | STACK_SIZE | Parse UART GPS → GPS queue |
+| `kalman_task` | 0 | 3 | STACK_SIZE | Kalman filter → filtered data queue |
+| `state_machine` | 0 | 4 | STACK_SIZE | Evaluate queues → flight state transitions |
+| `mqtt_telemetry` | 1 | 2 | STACK_SIZE×4 | Publish CSV to MQTT broker |
+| `xbee_telemetry` | 1 | 2 | STACK_SIZE×4 | Write CSV to XBee UART |
+| `beacon_transmit` | 1 | 2 | STACK_SIZE×4 | Inject raw 802.11 beacon frames |
+| `debug_terminal` | 1 | 1 | STACK_SIZE | Serial debug print (disable pre-flight) |
+
+`STACK_SIZE` = 2048 words (defined in `defs.h`). Disable `debug_terminal` before flight by setting `DEBUG_TO_TERMINAL 0`.
 
 ### Data queues and task communication
 
 ---
 
+Tasks communicate via FreeRTOS queues. All queues are defined with lengths in `include/defs.h`:
 
+| Queue | Length | Producers → Consumers |
+|-------|--------|-----------------------|
+| `altimeter_queue` | 10 | altimeter_task → kalman_task, state_machine |
+| `gyroscope_queue` | 10 | gyroscope_task → state_machine |
+| `gps_queue` | 24 | gps_task → telemetry tasks |
+| `telemetry_data_queue` | 10 | state_machine → mqtt/xbee/beacon tasks |
+| `filtered_data_queue` | 10 | kalman_task → state_machine, telemetry |
+| `flight_states_queue` | 1 | state_machine → telemetry tasks |
+| `log_to_mem_queue` | 64 | all tasks → sd_logger / flash_logger |
+
+
+
+## Communication Architecture
+
+---
+
+The N4 flight computer supports **four communication modes** that can be switched at runtime:
+
+| Mode | Transport | Range | Use Case |
+|------|-----------|-------|----------|
+| **MQTT** | WiFi 2.4 GHz (STA mode) | ~100 m | Pad ops, pre-flight, post-recovery |
+| **Beacon** | Raw 802.11 + ESP-NOW | ~4 km LOS | Short-to-medium range flights |
+| **XBee** | 900 MHz UART (XBee Pro 900HP) | 1–30 km | Long-range flights |
+| **Triple** | All three simultaneously | best available | Maximum redundancy |
+
+### Runtime Mode Commands
+
+Send via Serial, MQTT (`n4/commands`), or ESP-NOW:
+
+| Command | Effect |
+|---------|--------|
+| `MQTT_MODE` | MQTT only |
+| `BEACON_MODE` | Beacon only |
+| `XBEE_MODE` | XBee only |
+| `DUAL_MODE` | MQTT + Beacon |
+| `TRIPLE_MODE` | MQTT + Beacon + XBee |
+| `AUTO_FALLBACK_ON` | Auto-switch MQTT→Beacon on 10 s timeout |
+| `GET_MODE` | Report current mode and statistics |
+| `ARM` / `DISARM` | Arm/disarm the flight computer |
+
+### UART Assignments
+
+**Flight Computer**
+
+| UART | Pins | Device | Baud |
+|------|------|--------|------|
+| UART0 | USB | Debug console | 115200 |
+| UART1 | TX=32, RX=34 | XBee Pro 900HP | 115200 |
+| UART2 | TX=17, RX=16 | GPS module | 9600 |
+
+**Base Station** (`base_station_xbee_fixed.cpp`)
+
+| UART | Pins | Device | Baud |
+|------|------|--------|------|
+| UART0 | USB | Python server | 115200 |
+| UART1 | TX=17, RX=16 | Bluetooth HC-05/06 | 115200 |
+| UART2 | TX=32, RX=34 | XBee Pro 900HP | 115200 |
+
+Full architecture details: [n4-flight-software/docs/COMMUNICATION_ARCHITECTURE.md](n4-flight-software/docs/COMMUNICATION_ARCHITECTURE.md)
+
+---
 
 ### Telemetry and transmission to ground
 
@@ -115,9 +236,12 @@ b) Transmit video stream to ground**
 | velocity              | float     | 4            | velocity derived from the altimeter                      |
 | pyro1_state           | uint8_t   | 1            | state of main chute pyro (whether ejected or active)     |
 | pyro2_state           | uint8_t   | 1            | state of drogue chute pyro (whether ejected or active)   |
-| battery_voltage       | uint8_t   | 1            | voltage of the battery during flight                     |
+| battery_voltage       | float     | 4            | voltage of the battery during flight (V)                 |
+| rssi                  | int32_t   | 4            | signal strength at base station (dBm); beacon-mode value captured at receiver |
+| kalman_altitude       | float     | 4            | Kalman-filtered altitude AGL (m)                         |
+| kalman_vertical_vel   | float     | 4            | Kalman-filtered vertical velocity (m/s)                  |
 |                       |           |              |                                                          |
-| **Total packet size** |           | **74 BYTES** |                                                          |
+| **Total packet size** |           | **86 BYTES** | *(25 fields — 3 added: rssi, kalman_alt, kalman_vel)*   |
 
 
 
@@ -125,10 +249,14 @@ b) Transmit video stream to ground**
 
 ---
 
-For logging and storage, we use two methods to ensure redundancy.
+For logging and storage, we use **two simultaneous backends** for redundancy:
 
-One is logging to an external SPI flash memory during flight, the WINBOND W25Q32JVSIQ2135, which is a 32Mbits(4 MB) storage chip. 
-For redundancy, we add a microSD card into which data is dumped from the external SPI flash memory POST-FLIGHT.
+1. **SD card** (primary, in-flight): FAT32 CSV files written every cycle. Files named `flight_log_NNNN.csv` with auto-increment on boot. Enabled with `ENABLE_SD_LOGGING 1` in `defs.h`.
+2. **External SPI flash** (backup): WINBOND W25Q32JVSIQ2135, 32 Mbit (4 MB). Binary log written in parallel. Enabled with `ENABLE_FLASH_LOGGING 1` and `LOG_TO_MEMORY 1`.
+
+Both backends receive the same 25-field telemetry record via a FreeRTOS queue (`log_to_mem_queue`, depth 64). A separate **system event logger** (`src/system_logger.cpp`) records state transitions, arming events, and errors with timestamps to a second log file.
+
+See [n4-flight-software/docs/LOGGER_IMPROVEMENTS.md](n4-flight-software/docs/LOGGER_IMPROVEMENTS.md) for recent logging improvements.
 
 The logging flowchart is shown below:
 
@@ -255,9 +383,50 @@ The following screenshots show the results of GPS tests during development. In t
 
 #### States
 
-#### State transition conditions 
+Defined in `n4-flight-software/src/states.h`:
 
-#### State functions handling 
+| Value | State | Description |
+|-------|-------|-------------|
+| 0 | `PRE_FLIGHT_GROUND` | On pad, waiting for launch detection |
+| 1 | `POWERED_FLIGHT` | Motor burning, positive acceleration |
+| 2 | `COASTING` | Motor off, decelerating |
+| 3 | `APOGEE` | Zero vertical velocity, peak altitude |
+| 4 | `DROGUE_DEPLOY` | Drogue ejection charge fired |
+| 5 | `DROGUE_DESCENT` | Descending under drogue, awaiting main altitude |
+| 6 | `MAIN_DEPLOY` | Main chute ejection charge fired |
+| 7 | `MAIN_DESCENT` | Descending under main chute |
+| 8 | `POST_FLIGHT_GROUND` | Landed, logging stopped |
+
+#### State transition conditions
+
+```
+PRE_FLIGHT_GROUND
+  └─ altitude rises > 10 m (LAUNCH_DETECTION_THRESHOLD) within 20 m window
+       └─► POWERED_FLIGHT
+             └─ deceleration detected (motor burnout)
+                  └─► COASTING
+                        └─ Kalman vertical velocity reverses (APOGEE_DETECTION_THRESHOLD = 3 m)
+                             └─► APOGEE
+                                   └─ +1500 ms delay (DROGUE_DEPLOY_DELAY_MS)
+                                        └─► DROGUE_DEPLOY — fires GPIO 25 (5 s PWM)
+                                              └─► DROGUE_DESCENT
+                                                    └─ filtered altitude < 500 m AGL
+                                                         └─► MAIN_DEPLOY — fires GPIO 12 (5 s PWM)
+                                                               └─► MAIN_DESCENT
+                                                                     └─ near-zero velocity
+                                                                          └─► POST_FLIGHT_GROUND
+```
+
+Apogee and launch detection use **Kalman-filtered altitude and velocity** when `USE_KALMAN_FOR_STATE_DETECTION 1` (default). The `ARM` command requires filtered altitude > 50 m AGL (`ARM_ALTITUDE_THRESHOLD`) to prevent pad arming.
+
+#### State functions handling
+
+State logic is evaluated in the `state_machine` FreeRTOS task. On each state transition:
+- The new state is written to `flight_states_queue` for telemetry tasks
+- An event is logged to the system log via `system_logger`
+- Ejection flags (`DROGUE_DEPLOY_FLAG`, `MAIN_CHUTE_EJECT_FLAG`) are set one-way (never cleared)
+
+Full pyro control details: [n4-flight-software/docs/PYRO_CONTROL_SYSTEM.md](n4-flight-software/docs/PYRO_CONTROL_SYSTEM.md)
 
 ### IMU
 
@@ -293,7 +462,28 @@ Following this, we decide to keep the accelerometer for measuring the accelerati
 
 ---
 
-#### Complementary filter 
+#### Complementary filter
+
+A complementary filter fuses accelerometer and barometric altitude data to reduce noise. The **Kalman filter** (`src/kalman_filter.cpp`) has superseded the complementary filter for state detection and is used for both altitude and vertical velocity estimation in-flight.
+
+---
+
+## Pyro / Ejection Control
+
+---
+
+Both ejection channels use **PWM voltage scaling** to deliver ~6 V to the bridgewire from the 15 V supply:
+
+$$\text{duty} = \frac{6}{15} \times 255 = 102 \quad (\approx 40\%\text{ at 500 Hz, 8-bit})$$
+
+| Channel | GPIO | LEDC Channel | Event | Pulse Duration |
+|---------|------|-------------|-------|----------------|
+| Drogue  | 25   | 3 | Apogee + 1500 ms | 5000 ms |
+| Main chute | 12 | 4 | Descent through 500 m AGL | 5000 ms |
+
+See [n4-flight-software/docs/PYRO_CONTROL_SYSTEM.md](n4-flight-software/docs/PYRO_CONTROL_SYSTEM.md) for full details, safety system, and pre-flight checks.
+
+---
 
 ### Utility scripts
 During development the following scripts might (and will) be useful.
@@ -314,6 +504,42 @@ python hex-converter.py
 ```
 The screenshot above appears. Select your option and proceed. The program will output your string in HEX format.
 
+
+## Documentation Index
+
+---
+
+All detailed guides live in the `n4-flight-software/` subdirectory.
+
+### Getting Started
+- [n4-flight-software/QUICKSTART.md](n4-flight-software/QUICKSTART.md) — build, flash, first test, full pre-flight checklist
+- [n4-flight-software/README.md](n4-flight-software/README.md) — firmware project overview and file layout
+
+### Topic Guides (`n4-flight-software/docs/`)
+- [docs/COMMUNICATION_ARCHITECTURE.md](n4-flight-software/docs/COMMUNICATION_ARCHITECTURE.md) — full multi-mode comms design, UART assignments, FreeRTOS tasks
+- [docs/XBEE_INTEGRATION.md](n4-flight-software/docs/XBEE_INTEGRATION.md) — XBee Pro 900HP wiring, XCTU settings (AP=0, BD=7), CSV format
+- [docs/BEACON_CONFIGURATION.md](n4-flight-software/docs/BEACON_CONFIGURATION.md) — beacon mode, 4 km range, antennas, RSSI
+- [docs/RSSI_TELEMETRY_INTEGRATION.md](n4-flight-software/docs/RSSI_TELEMETRY_INTEGRATION.md) — how RSSI is captured and included in telemetry
+- [docs/WiFiManager_BaseStation_Setup.md](n4-flight-software/docs/WiFiManager_BaseStation_Setup.md) — base station WiFi config via captive portal
+- [docs/mqtt-setup.md](n4-flight-software/docs/mqtt-setup.md) — MQTT broker installation and topic structure
+- [docs/beacon-setup.md](n4-flight-software/docs/beacon-setup.md) — beacon hardware wiring and MAC setup
+- [docs/PYRO_CONTROL_SYSTEM.md](n4-flight-software/docs/PYRO_CONTROL_SYSTEM.md) — PWM ejection control, timing, safety
+- [docs/PWM_CONFIG_COMMANDS.md](n4-flight-software/docs/PWM_CONFIG_COMMANDS.md) — runtime PWM commands
+- [docs/LOGGER_IMPROVEMENTS.md](n4-flight-software/docs/LOGGER_IMPROVEMENTS.md) — SD + flash logging improvements
+- [docs/logging.md](n4-flight-software/docs/logging.md) — logging system guide and post-flight data extraction
+
+### Fix Logs & Changelogs (`n4-flight-software/fixes/`)
+- [fixes/BEACON_RSSI_DEBUG_GUIDE.md](n4-flight-software/fixes/BEACON_RSSI_DEBUG_GUIDE.md) — RSSI troubleshooting
+- [fixes/BEACON_RSSI_UPDATE_COMPLETE.md](n4-flight-software/fixes/BEACON_RSSI_UPDATE_COMPLETE.md) — RSSI implementation changelog
+- [fixes/XBEE_MODE_SWITCHING_FIX.md](n4-flight-software/fixes/XBEE_MODE_SWITCHING_FIX.md) — mode-switching bug fix log
+- [fixes/AUTO_SWITCHING_FIXES.md](n4-flight-software/fixes/AUTO_SWITCHING_FIXES.md) — auto mode-switching fixes
+- [fixes/COMMUNICATION_MANAGER_FIX.md](n4-flight-software/fixes/COMMUNICATION_MANAGER_FIX.md) — comm manager fixes
+- [fixes/DATA_STREAM_FIXES.md](n4-flight-software/fixes/DATA_STREAM_FIXES.md) — data stream bug fixes
+- [fixes/PERFORMANCE_FIXES_REPORT.md](n4-flight-software/fixes/PERFORMANCE_FIXES_REPORT.md) — performance improvements
+- [fixes/PWM_DURATION_UPDATE_SUMMARY.md](n4-flight-software/fixes/PWM_DURATION_UPDATE_SUMMARY.md) — pyro timing update notes
+- [fixes/SYSTEM_STATUS_FINAL.md](n4-flight-software/fixes/SYSTEM_STATUS_FINAL.md) — system status report
+
+---
 
 ### References and Error fixes
 
