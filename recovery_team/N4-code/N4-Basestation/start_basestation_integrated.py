@@ -157,7 +157,7 @@ def listen_for_identification(port, timeout=8):
         print(f"    🎧 Listening on {port} (timeout: {timeout}s)...")
         ser = serial.Serial(
             port=port,
-            baudrate=115200,
+            baudrate=460800,  # High-speed Bluetooth (matches ESP32 HC-05/HC-06 config)
             timeout=1
         )
         

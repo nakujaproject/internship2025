@@ -21,6 +21,14 @@
      (Through-Hole Module)
 ```
 
+![XBee Pro 900HP Physical Pinout](images/xbee_pinout.jpg)
+
+*Physical pin layout of the XBee Pro 900HP S3B module. Pin 1 (VCC) is top-left; Pin 10 (GND) is top-right; UART pins DOUT (2) and DIN (3) are on the left side.*
+
+![XBee Pro 900HP Physical Pinout](images/xbee_pinout.jpg)
+
+*Physical pin layout of the XBee Pro 900HP S3B module. Pin 1 (VCC) is top-left; Pin 10 (GND) is top-right; UART pins DOUT (2) and DIN (3) are on the left side.*
+
 ---
 
 ## Complete Pin Reference

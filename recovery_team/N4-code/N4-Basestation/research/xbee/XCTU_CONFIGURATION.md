@@ -172,6 +172,22 @@ Export and save your configurations:
 ✅ **Success:** Characters appear correctly
 ❌ **Failure:** Gibberish or no data → Check ID/HP match, verify baud rate
 
+![First XBee Transmission — XCTU Console](images/First_Xbee%20Transmission.PNG)
+
+*Successful first transmission in the XCTU console: sent characters appearing on the receiver side confirms the radio link is working end-to-end.*
+
+![Live Telemetry Packet Stream](images/Sent%20packet%20screenshot.PNG)
+
+*Live CSV telemetry packets streaming from the rocket-side XBee into the ground station. Each line is one 25-field telemetry frame at 50 Hz.*
+
+![First XBee Transmission — XCTU Console](images/First_Xbee%20Transmission.PNG)
+
+*Successful first transmission in the XCTU console: sent characters appearing on the receiver side confirms the radio link is working end-to-end.*
+
+![Live Telemetry Packet Stream](images/Sent%20packet%20screenshot.PNG)
+
+*Live CSV telemetry packets streaming from the rocket-side XBee into the ground station. Each line is one 25-field telemetry frame at 50 Hz.*
+
 ---
 
 ## Troubleshooting Configuration Issues

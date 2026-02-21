@@ -117,6 +117,9 @@ function Sidebar(props) {
         case "beacon":
           setCurrentCommMode("Beacon");
           break;
+        case "xbee":
+          setCurrentCommMode("XBee");
+          break;
         // case "dual":
         //   setCurrentCommMode("Dual");
         //   break;
@@ -241,6 +244,10 @@ function Sidebar(props) {
           ? "text-orange-600"
           : props.communicationMode === "MQTT"
           ? "text-green-600"
+          : props.communicationMode === "XBee"
+          ? "text-purple-600"
+          : props.communicationMode?.includes("+")
+          ? "text-blue-600"
           : "text-gray-500"
       }`}
     >
@@ -298,7 +305,7 @@ function Sidebar(props) {
             <div className="text-sm uppercase -mt-6 bg-white px-1 z-10 h-1/3">
               Communication Mode
             </div>
-            <div className="text-base h-2/3 w-full pt-1 uppercase items-center text-center grid grid-cols-2 gap-2*">
+            <div className="text-base h-2/3 w-full pt-1 uppercase items-center text-center grid grid-cols-3 gap-2">
               <Button
                 onClick={() => handleCommandClick({command: "mqtt"})}
                 className={`px-1 py-1 rounded-full shadow-md border-2 border-box font-bold text-xs uppercase transition-all duration-200 ${
@@ -325,19 +332,19 @@ function Sidebar(props) {
               >
                 BEACON
               </Button>
-              {/* <Button
-                onClick={() => handleCommandClick({command: "dual"})}
+              <Button
+                onClick={() => handleCommandClick({command: "xbee"})}
                 className={`px-1 py-1 rounded-full shadow-md border-2 border-box font-bold text-xs uppercase transition-all duration-200 ${
-                  currentCommMode === "Dual" 
-                    ? "bg-blue-600 hover:bg-blue-700 text-white border-blue-800" 
-                    : lastPressedButton === "dual"
-                    ? "bg-blue-300 text-blue-800 border-blue-500"
+                  currentCommMode === "XBee" 
+                    ? "bg-purple-600 hover:bg-purple-700 text-white border-purple-800" 
+                    : lastPressedButton === "xbee"
+                    ? "bg-purple-300 text-purple-800 border-purple-500"
                     : "bg-gray-400 hover:bg-gray-500 text-white border-gray-600"
                 }`}
                 disabled={!props.isConnected}
               >
-                DUAL
-              </Button> */}
+                XBEE
+              </Button>
             </div>
           </div>
 

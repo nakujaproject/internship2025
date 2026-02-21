@@ -436,6 +436,10 @@ function App() {
           commMode = "Beacon";
         } else if (modeStr === "mqtt") {
           commMode = "MQTT";
+        } else if (modeStr === "xbee") {
+          commMode = "XBee";
+        } else if (modeStr === "auto") {
+          commMode = "Auto";
         } else {
           commMode = "MQTT"; // fallback to MQTT for unknown values
         }
@@ -611,6 +615,10 @@ function App() {
             commMode = "Beacon";
           } else if (modeStr === "mqtt") {
             commMode = "MQTT";
+          } else if (modeStr === "xbee") {
+            commMode = "XBee";
+          } else if (modeStr === "auto") {
+            commMode = "Auto";
           } else {
             commMode = "MQTT"; // fallback to MQTT for unknown values
           }

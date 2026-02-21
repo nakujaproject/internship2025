@@ -26,7 +26,7 @@ except Exception:
     TK_AVAILABLE = False
 
 # === CONFIG ===
-SERIAL_BAUD = 115200
+SERIAL_BAUD = 460800  # High-speed Bluetooth (matches ESP32 HC-05/HC-06 config)
 MQTT_BROKER = "localhost"  # Update with your broker IP
 MQTT_PORT = 1883
 MQTT_TELEMETRY_TOPIC = "n4/flight-computer-1"
@@ -445,6 +445,7 @@ class ConnectionStatus:
         self.lock = Lock()
         self.last_serial = 0
         self.last_mqtt = 0
+        self.last_xbee = 0
         self.current_mode = "UNKNOWN"
         
     def update_serial(self):
@@ -455,18 +456,30 @@ class ConnectionStatus:
         with self.lock:
             self.last_mqtt = time.time()
             
+    def update_xbee(self):
+        with self.lock:
+            self.last_xbee = time.time()
+            
     def get_mode(self):
         with self.lock:
             now = time.time()
             serial_active = (now - self.last_serial) < AUTO_DETECT_INTERVAL*2
             mqtt_active = (now - self.last_mqtt) < AUTO_DETECT_INTERVAL*2
+            xbee_active = (now - self.last_xbee) < AUTO_DETECT_INTERVAL*2
             
-            if serial_active and mqtt_active:
-                return "DUAL"
-            elif mqtt_active:
-                return "MQTT"
-            elif serial_active:
-                return "BEACON"
+            # Build mode string from active connections
+            active_modes = []
+            if mqtt_active:
+                active_modes.append("MQTT")
+            if serial_active:
+                active_modes.append("BEACON")
+            if xbee_active:
+                active_modes.append("XBEE")
+            
+            if len(active_modes) > 1:
+                return "+".join(active_modes)  # e.g., "MQTT+XBEE"
+            elif len(active_modes) == 1:
+                return active_modes[0]
             return "UNKNOWN"
 
 connection_status = ConnectionStatus()
@@ -830,24 +843,47 @@ def process_serial_data(line):
                     data['pyro1_state'] = chute.get('pyro1_state', chute.get('drogue', 0))
                     data['pyro2_state'] = chute.get('pyro2_state', chute.get('main', 0))
 
-                # Normalize communication mode
-                data["communication_mode"] = data.get("communication_mode", "BEACON").upper()
+                # Normalize communication mode and update connection status
+                comm_mode = data.get("communication_mode", "BEACON").upper()
+                data["communication_mode"] = comm_mode
+                
+                # Update connection status based on mode
+                if comm_mode == "XBEE":
+                    connection_status.update_xbee()
+                elif comm_mode in ["BEACON", "AUTO"]:
+                    connection_status.update_serial()
+                
                 update_last_telemetry(data)
                 if mqtt_connected:
                     client.publish(APP_TELEMETRY_TOPIC, json.dumps(data))
-                    connection_status.update_serial()
                     logger.info(f"📡 Forwarded beacon JSON telemetry - Record #{data.get('record_number', 'N/A')} - Kalman Alt: {kalman_alt}, Vel: {kalman_vel}")
                 else:
                     logger.debug("📡 MQTT not connected, skipping telemetry forward")
                 log_to_csv(data)
             except json.JSONDecodeError:
-                logger.warning(f"⚠️ Unrecognized serial payload format: {line}")
+                # Ignore debug messages from ESP32 (e.g., "[XBEE TX] Packet #...", "[BEACON TX]", "[WIFI TX]")
+                if line.startswith('[') or line.startswith('STATUS:'):
+                    logger.debug(f"🔧 ESP32 debug: {line}")
+                else:
+                    logger.warning(f"⚠️ Unrecognized serial payload format: {line}")
                 
     except Exception as e:
         logger.error(f"❌ Serial data processing error: {e}")
 
 def send_command(cmd, source):
     """Send command to flight computer with improved error handling"""
+    # Map friendly names to actual commands
+    command_map = {
+        'MQTT': 'CMD_MQTT_MODE',
+        'BEACON': 'CMD_BEACON_MODE',
+        'XBEE': 'CMD_XBEE_MODE',
+        'AUTO_ON': 'CMD_AUTO_FALLBACK_ON',
+        'AUTO_OFF': 'CMD_AUTO_FALLBACK_OFF',
+    }
+    
+    cmd_upper = cmd.upper().strip()
+    actual_cmd = command_map.get(cmd_upper, cmd)
+    
     if not serial_conn or not serial_conn.is_open:
         logger.debug("Serial not connected, attempting to connect...")
         if not open_serial():
@@ -861,10 +897,10 @@ def send_command(cmd, source):
                 
             serial_conn.reset_input_buffer()
             serial_conn.reset_output_buffer()
-            serial_conn.write((cmd + "\n").encode())
+            serial_conn.write((actual_cmd + "\n").encode())
             serial_conn.flush()
             
-            logger.info(f"📤 Sent command: {cmd} (source: {source})")
+            logger.info(f"📤 Sent command: {actual_cmd} (from {cmd}, source: {source})")
             
             # Wait for response
             start_time = time.time()

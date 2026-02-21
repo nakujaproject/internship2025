@@ -27,6 +27,10 @@ The V03 Shield has a toggle switch that routes UART data lines:
 - **Use Case:** Normal flight operation
 - **Issue:** May conflict with Serial Monitor (D0/D1 are hardware serial)
 
+![XBee Shield V03 — USB/XBee Mode Switch](images/XBEE_Shield_Module.jpeg)
+
+*The slide switch on the V03 Shield selects between USB passthrough (for XCTU configuration) and microcontroller UART (for flight operation). Always flip back to XBee position before connecting the ESP32.*
+
 ### Power Regulation
 
 The V03 Shield includes:
@@ -70,6 +74,10 @@ When using the V03 Shield with routing issues, bypass it and wire directly:
 | **Pin 3 (DIN)** | Digital Pin 3 | TX (Transmitter) |
 
 **Note:** Power XBee from Shield's 3.3V regulator, but use jumper wires for data (Pins 2 & 3).
+
+![XBee Pro 900HP Pinout](images/xbee_pinout.jpg)
+
+*XBee Pro 900HP S3B pin layout — Pin 2 (DOUT) is TX from XBee to host MCU; Pin 3 (DIN) is RX into XBee from host MCU.*
 
 ---
 

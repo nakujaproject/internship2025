@@ -2,28 +2,21 @@
 
 ## 📁 Main Directory Structure
 
-```
-N4-Basestation/
-├── start_basestation_integrated.py    # 🚀 START HERE - Main launcher
-├── start_basestation.py               # Legacy launcher
-├── README.md                           # Project overview
-├── research/                           # 🔬 All development files
-│   ├── arduino_code/                   # ESP32 code (production + simulator)
-│   ├── bluetooth/                      # Bluetooth tools & guides
-│   ├── simulation/                     # Flight simulators & testing
-│   ├── analysis/                       # Data analysis tools
-│   ├── documentation/                  # Technical docs
-│   ├── scripts/                        # Server & utility scripts
-│   └── range_tests/                    # Range test results
-├── src/                                # Frontend React code
-├── public/                             # Static assets
-├── telemetry_logs/                     # Recorded flight data
-├── server.js                           # Node.js API server
-├── vite.config.js                      # Vite build config
-├── package.json                        # Node dependencies
-├── mosquitto.conf                      # MQTT config
-└── osm-2020-02-10-v3.11_africa_kenya.mbtiles  # Map tiles
-```
+| Path | Description |
+|------|-------------|
+| `start_basestation.py` | 🚀 Main launcher — manages all services |
+| `start_basestation_integrated.py` | Legacy integrated launcher |
+| `README.md` | Project overview |
+| `src/` | React frontend source code |
+| `public/` | Static assets |
+| `server.js` | Node.js API server |
+| `vite.config.js` | Vite build configuration |
+| `package.json` | Node.js dependencies |
+| `mosquitto.conf` | MQTT broker configuration |
+| `telemetry_logs/` | Recorded flight data (CSV) |
+| `diagrams/` | Architecture diagrams (scripts + PNG output) |
+| `research/` | Development files, Bluetooth tools, analysis, docs, range tests |
+| `osm-*.mbtiles` | Offline map tiles for GPS display |
 
 ---
 

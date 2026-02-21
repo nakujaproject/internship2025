@@ -21,6 +21,8 @@ Real-time telemetry monitoring and remote rocket control system with integrated 
 - **[research/COMMAND_INTERFACE_IMPLEMENTATION.md](research/COMMAND_INTERFACE_IMPLEMENTATION.md)** - Command system architecture
 - **[research/VISUAL_FEEDBACK_IMPLEMENTATION.md](research/VISUAL_FEEDBACK_IMPLEMENTATION.md)** - UI/UX feedback systems
 - **[research/Range_Test_2_Report.md](research/Range_Test_2_Report.md)** - Field test results and analysis
+- **[Telemetry_Analysis.ipynb](Telemetry_Analysis.ipynb)** - 🆕 Jupyter notebook for post-flight telemetry analysis
+- **[TELEMETRY_ANALYSIS_GUIDE.md](TELEMETRY_ANALYSIS_GUIDE.md)** - 🆕 Complete guide for using the analysis notebook
 
 ---
 
@@ -181,82 +183,33 @@ python start_basestation.py
 ## 4. Architecture Overview
 
 ### Single Entry Point
-```
-start_basestation.py (main entry - 1100 lines)
-├── Service Management
-│   ├── Mosquitto MQTT broker (port 1883)
-│   ├── Tileserver-GL (port 8080)
-│   ├── Vite dev server (port 5173)
-│   └── Node.js API server (port 3000)
-├── Telemetry Server (integrated)
-│   ├── Serial/Bluetooth communication
-│   ├── USB auto-reconnection monitoring
-│   ├── MQTT bridge (serial ↔ MQTT)
-│   ├── CSV logging
-│   ├── Command processing
-│   └── Telemetry parsing (CSV/JSON)
-└── Process Lifecycle Management
-    ├── Port cleanup
-    ├── Graceful shutdown
-    └── Resource cleanup
-```
+
+![N4 Base Station System Architecture](diagrams/output/system_architecture.png)
 
 ### Data Flow
-```
-Flight Computer (ESP32)
-    ↓ ESP-NOW
-Base Station ESP32
-    ↓ Serial/Bluetooth (COM port)
-start_basestation.py
-    ↓ MQTT publish (n4/app/flight-computer-1)
-React Dashboard (localhost:5173)
-```
+
+![N4 Base Station Telemetry Data Flow](diagrams/output/data_flow.png)
 
 ### Command Flow
-```
-React UI (Sidebar controls)
-    ↓ MQTT publish (n4/commands)
-start_basestation.py
-    ↓ Serial write
-Base Station ESP32
-    ↓ ESP-NOW
-Flight Computer ESP32
-```
+
+![N4 Base Station Command Flow](diagrams/output/command_flow.png)
 
 ---
 
 ## 5. Project Structure
 
-```
-N4-Basestation/
-├── start_basestation.py       # Main entry point (unified)
-├── mosquitto.conf              # MQTT broker config
-├── package.json                # Node.js dependencies
-├── vite.config.js              # Vite configuration
-├── server.js                   # Node.js API server
-├── index.html                  # App HTML
-├── osm-2020-02-10-v3.11_africa_kenya.mbtiles  # Map tiles
-├── src/                        # React app source
-│   ├── App.jsx                 # Main app component
-│   ├── components/
-│   │   ├── Sidebar.jsx         # Control panel
-│   │   ├── Chart.jsx           # Telemetry charts
-│   │   ├── Map.jsx             # GPS map
-│   │   └── ...
-│   ├── routes/
-│   │   ├── telemetryService.cjs
-│   │   └── logService.cjs
-│   └── utils/
-│       ├── telemetryHandler.js
-│       └── LogHandler.js
-├── telemetry_logs/             # CSV telemetry logs (auto-created)
-└── research/                   # Analysis/test scripts (archived)
-    ├── server_old.py
-    ├── start_basestation_old.py
-    ├── analyze_telemetry.py
-    ├── flight_test_simulator.py
-    └── ...
-```
+| Path | Description |
+|------|-------------|
+| `start_basestation.py` | Main entry point — manages all services |
+| `mosquitto.conf` | MQTT broker configuration |
+| `package.json` | Node.js / React dependencies |
+| `vite.config.js` | Vite bundler configuration |
+| `server.js` | Node.js API server |
+| `index.html` | React app shell |
+| `src/` | React frontend source (App.jsx, components/, routes/, utils/) |
+| `telemetry_logs/` | Auto-created CSV telemetry logs |
+| `research/` | Archived analysis and test scripts |
+| `diagrams/` | Architecture diagrams (Python scripts + PNG output) |
 
 ---
 
@@ -362,11 +315,80 @@ npm install
 
 ---
 
-## 8. Development & Analysis Tools
+## 8. Post-Flight Data Analysis
+
+### 📊 Jupyter Notebook Analysis (Recommended)
+
+**Interactive telemetry analysis notebook:** [Telemetry_Analysis.ipynb](Telemetry_Analysis.ipynb)  
+**Complete usage guide:** [TELEMETRY_ANALYSIS_GUIDE.md](TELEMETRY_ANALYSIS_GUIDE.md)
+
+This comprehensive Jupyter notebook provides:
+- **File Selection**: Load CSV from `telemetry_logs/` or upload custom files
+- **Automatic Phase Detection**: Launch, apogee, landing identification
+- **Interactive Visualizations**: Altitude, velocity, acceleration, battery, GPS tracks
+- **Flight Statistics**: Max altitude, max velocity, flight duration, apogee time
+- **Data Quality Reports**: Missing values, value ranges, data completeness
+- **Export Capabilities**: Processed CSV, summary reports, flight phase data
+
+#### Quick Start
+```bash
+# 1. Install Jupyter and dependencies
+pip install -r analysis_requirements.txt
+
+# Or install manually:
+# pip install jupyter pandas numpy matplotlib seaborn plotly ipywidgets
+
+# 2. Launch notebook
+jupyter notebook Telemetry_Analysis.ipynb
+
+# 3. Select CSV file from dropdown or upload your own
+# 4. Run cells to analyze flight data
+```
+
+#### Features
+- ✅ **File Browser**: Select from existing telemetry logs or upload CSV
+- ✅ **Auto-Detection**: Handles both 28-field (base station) and 6-field (XBee UART) formats
+- ✅ **Phase Detection**: Automatic launch/apogee/landing identification
+- ✅ **Interactive Plots**: Zoom, pan, hover for detailed inspection
+- ✅ **GPS Mapping**: Plot flight trajectory on interactive map
+- ✅ **Battery Monitoring**: Track voltage drops and system health
+- ✅ **Export Reports**: Save processed data and summary statistics
+
+#### Notebook Structure
+1. **Data Loading**: File selection widgets (dropdown + upload)
+2. **Quality Report**: Data completeness and value ranges
+3. **Phase Detection**: Automatic flight phase identification
+4. **Altitude Profile**: Interactive altitude/velocity plots with phase markers
+5. **Acceleration**: 3-axis acceleration and G-force analysis
+6. **Battery Health**: Voltage monitoring and critical level warnings
+7. **GPS Trajectory**: Flight path visualization on map
+8. **Summary Report**: Comprehensive flight statistics
+9. **Data Export**: Save processed data and analysis results
+
+#### CSV Format Support
+
+**Base Station Format (28 fields)**:
+```csv
+timestamp,iso_timestamp,record_number,operation_mode,state,ax,ay,az,pitch,roll,
+gx,gy,gz,latitude,longitude,gps_altitude,gps_time,pressure,temperature,
+agl_altitude,velocity,pyro1_state,pyro2_state,battery_voltage,wifi_rssi,
+kalman_altitude,kalman_vertical_velocity,communication_mode,raw_data
+```
+
+**XBee UART Format (6 fields)**:
+```csv
+timestamp,state,altitude,velocity,accel_z,battery
+```
+
+The notebook automatically detects the format based on column count and adjusts parsing accordingly.
+
+---
+
+## 9. Development & Analysis Tools
 
 All research, analysis, and testing scripts are archived in the `research/` directory:
 
-### Telemetry Analysis
+### Command-Line Telemetry Analysis
 ```bash
 # Analyze flight data
 python research/analyze_telemetry.py
