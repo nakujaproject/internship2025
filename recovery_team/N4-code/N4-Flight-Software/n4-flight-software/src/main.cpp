@@ -1183,6 +1183,108 @@ float processVariance_bmp = 0.001;
 float measurementVariance_bmp = 0.1;
 float kalmanGain_bmp;
 
+// ============================================================================
+// 🔧 ZERO VELOCITY UPDATE (ZUPT) - Velocity Drift Correction
+// ============================================================================
+// Stationary detection parameters
+#define ZUPT_ACC_THRESHOLD_M_S2    0.3f    // Accel threshold for stationary (m/s²)
+#define ZUPT_ALT_CHANGE_THRESHOLD  0.05f   // Max altitude change (m) over detection window
+#define ZUPT_TIME_WINDOW_MS        1500    // Time window for stationary confirmation (ms)
+#define ZUPT_VELOCITY_VARIANCE     0.01f   // Process noise for velocity measurement update
+
+// ZUPT state tracking (static to persist across task invocations)
+static struct {
+    bool is_stationary;                    // Current stationary state
+    unsigned long stationary_start_ms;     // When stationary motion began
+    float altitude_at_window_start;        // Reference altitude for change detection
+    unsigned long altitude_sample_time_ms; // Timestamp of altitude reference
+    uint8_t consecutive_frames;            // Frames meeting stationary criteria
+} zupt_state = {false, 0, 0.0f, 0, 0};
+
+// ============================================================================
+// ZUPT Helper: Detect stationary condition
+// Returns true if rocket appears stationary based on multi-criteria check
+// ============================================================================
+bool isStationaryCondition(float abs_acc, float current_alt, float recent_alt_change) {
+    // Criteria 1: Acceleration must be low (< threshold)
+    if (abs_acc > ZUPT_ACC_THRESHOLD_M_S2) {
+        zupt_state.consecutive_frames = 0;
+        return false;
+    }
+    
+    // Criteria 2: Altitude must be stable (change < threshold)
+    if (fabs(recent_alt_change) > ZUPT_ALT_CHANGE_THRESHOLD) {
+        zupt_state.consecutive_frames = 0;
+        return false;
+    }
+    
+    // Criteria 3: Time confirmation - must be stationary for confirmation window
+    zupt_state.consecutive_frames++;
+    unsigned long now = millis();
+    
+    if (!zupt_state.is_stationary) {
+        // Starting stationary detection
+        if (zupt_state.consecutive_frames == 1) {
+            zupt_state.stationary_start_ms = now;
+            zupt_state.altitude_at_window_start = current_alt;
+            zupt_state.altitude_sample_time_ms = now;
+        }
+        
+        // Check if window expired without transition to stationary
+        if ((now - zupt_state.stationary_start_ms) > ZUPT_TIME_WINDOW_MS) {
+            return true;  // Confirmed stationary
+        }
+        return false;
+    }
+    
+    return true;  // Already confirmed stationary
+}
+
+// ============================================================================
+// ZUPT Helper: Perform velocity-only measurement update
+// Updates S(1,0) (velocity) using Kalman equations with v_measurement = 0
+// ============================================================================
+void applyVelocityMeasurementUpdate(BLA::Matrix<1,1>& R_vel) {
+    // Measurement model for velocity only: H_v = [0 1]
+    // Measurement: z_v = 0 (velocity should be zero when stationary)
+    
+    BLA::Matrix<1,2> H_v = {0, 1};  // Extract velocity from state
+    BLA::Matrix<1,1> z_v = {0.0};   // Measurement: zero velocity
+    BLA::Matrix<1,1> y_v;           // Innovation (measurement residual)
+    BLA::Matrix<1,1> S_v;           // Innovation covariance
+    BLA::Matrix<2,1> K_v;           // Kalman gain (2x1)
+    BLA::Matrix<1,1> S_v_inv;       // Inverse of innovation covariance
+    
+    // Innovation: y = z - H*x
+    y_v = z_v - H_v * S;
+    
+    // Innovation covariance: S = H*P*H^T + R
+    S_v = H_v * P * ~H_v + R_vel;
+    
+    // Check for singularity
+    if (fabs(S_v(0, 0)) < 1e-8) {
+        // Skip this update if covariance is too small
+        return;
+    }
+    
+    // Kalman gain: K = P*H^T / S
+    S_v_inv = {1.0f / S_v(0, 0)};
+    K_v = P * ~H_v * S_v_inv;
+    
+    // State update: x = x + K*y
+    S = S + K_v * y_v;
+    
+    // Covariance update: P = (I - K*H)*P
+    P = (I - K_v * H_v) * P;
+    
+    // Extract updated velocity
+    VelocityVerticalKalman = S(1, 0);
+}
+
+// ============================================================================
+// End ZUPT Definitions
+// ============================================================================
+
 
   void init_kalman_matrices() {
   F = {1, 0.0034, 0, 1};
@@ -1285,7 +1387,9 @@ float kalmanFilter(float z) {
 
 void taskKalman2D(void *pvParameters) {
     float input_altitude;
+    float previous_altitude = 0.0f;
     telemetry_type_t acc_data_lcl; // For acceleration data access
+    static unsigned long last_altitude_update_ms = 0;
     
     while (true) {
         // Wait for filtered altitude data from the readAltimeterTask
@@ -1312,7 +1416,7 @@ void taskKalman2D(void *pvParameters) {
             //Serial.printf("After Prediction S: %.4f %.4f\n", S(0,0), S(1,0));
             //Serial.printf("P(0,0): %.4f  P(1,1): %.4f\n", P(0,0), P(1,1));
 
-            // UPDATE
+            // UPDATE (Altitude measurement)
             L = H * P * ~H + R;
 
             if (fabs(L(0, 0)) < 1e-6 || isnan(L(0,0))) {
@@ -1336,10 +1440,60 @@ void taskKalman2D(void *pvParameters) {
             AltitudeKalman = S(0, 0);
             VelocityVerticalKalman = S(1, 0);
             
-            // 🔥 SYNCHRONIZED KALMAN OUTPUT - Update global altimeter packet for consistent data across all tasks
-            altimeter_packet.kalman_altitude = AltitudeKalman;
-            altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;
-
+            // ============================================================================
+            // 🔧 ZUPT APPLICATION - Velocity drift correction when stationary
+            // ============================================================================
+            // Check if we should apply ZUPT (only during pre-flight and post-flight ground states)
+            bool apply_zupt = (current_state == ARMED_FLIGHT_STATE::PRE_FLIGHT_GROUND ||
+                               current_state == ARMED_FLIGHT_STATE::POST_FLIGHT_GROUND);
+            
+            if (apply_zupt) {
+                // Calculate altitude change since last sample
+                unsigned long now_ms = millis();
+                unsigned long time_delta_ms = now_ms - last_altitude_update_ms;
+                float altitude_change = fabs(input_altitude - previous_altitude);
+                
+                // Get absolute acceleration magnitude
+                float abs_acc = fabs(Acc(0, 0));
+                
+                // Check stationary condition
+                if (isStationaryCondition(abs_acc, input_altitude, altitude_change)) {
+                    // Stationary confirmed - apply velocity-only ZUPT update
+                    if (!zupt_state.is_stationary) {
+                        zupt_state.is_stationary = true;
+                        debugln("🔧 ZUPT ACTIVE: Stationary detected");
+                    }
+                    
+                    // Perform velocity measurement update with tighter variance
+                    BLA::Matrix<1,1> R_vel = {ZUPT_VELOCITY_VARIANCE};
+                    applyVelocityMeasurementUpdate(R_vel);
+                    
+                    // Optional: Debug output (comment out for production)
+                    // Serial.printf("  V(zupt): %.4f | P[1,1]: %.6f\n", VelocityVerticalKalman, P(1, 1));
+                } else {
+                    // Motion detected - disable ZUPT
+                    if (zupt_state.is_stationary) {
+                        zupt_state.is_stationary = false;
+                        debugln("🔧 ZUPT INACTIVE: Motion detected");
+                    }
+                }
+                
+                // Update altitude tracking
+                previous_altitude = input_altitude;
+                last_altitude_update_ms = now_ms;
+            } else {
+                // Not in ground state - ensure ZUPT is off
+                if (zupt_state.is_stationary) {
+                    zupt_state.is_stationary = false;
+                }
+                // Reset altitude tracking when transitioning away from ground
+                previous_altitude = input_altitude;
+                last_altitude_update_ms = millis();
+            }
+            // ============================================================================
+            // End ZUPT Application
+            // ============================================================================
+            
             // 🔥 SYNCHRONIZED KALMAN OUTPUT - Update global altimeter packet for consistent data across all tasks
             altimeter_packet.kalman_altitude = AltitudeKalman;
             altimeter_packet.kalman_vertical_velocity = VelocityVerticalKalman;

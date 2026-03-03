@@ -172,8 +172,14 @@ namespace OPERATION_MODE {
 #include <stdint.h>
 #ifndef MAC_ADDRESS_VALUES_DEFINED
 #define MAC_ADDRESS_VALUES_DEFINED
-static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC (placeholder)
+// Primary FC- Glenn FC
+// static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC (placeholder)
+// static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC (placeholder)
+
+// Secondary fc - Cephas FC
+static const uint8_t ROCKET_MAC[6] = {0x14, 0x08, 0x08, 0xAC, 0x8B, 0xF4}; // Flight computer ESP32 MAC (placeholder)
 static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC (placeholder)
+
 #endif
 
 // Externs for communication manager to restore WiFi/MQTT
