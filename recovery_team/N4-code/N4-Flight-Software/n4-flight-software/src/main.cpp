@@ -14,6 +14,7 @@
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <Adafruit_ADS1X15.h>
 #include <WiFi.h>
 #include <ESP32PWM.h>
 #include <PubSubClient.h> // TODO: ADD A MQTT SWITCH - TO USE MQTT OR NOT
@@ -432,6 +433,41 @@ volatile float battery_voltage = 0.0;
 
 // WiFi RSSI monitoring variable (for MQTT mode)
 volatile int32_t wifi_rssi = 0;
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ADS1115 Battery & Pyro Line Voltage Monitor
+// ═══════════════════════════════════════════════════════════════════════════════════════
+Adafruit_ADS1115 ads;
+
+// ADS1115 channel assignments (corrected per user's configuration)
+const uint8_t ADS_ADDR       = 0x48;
+const uint8_t ADC_CH_BATTERY = 2;   // A2 — battery voltage divider
+const uint8_t ADC_CH_DROGUE  = 1;   // A1 — drogue pin voltage divider
+const uint8_t ADC_CH_MAIN    = 0;   // A0 — main pin voltage divider
+
+// I2C pins (ESP32 hardware defaults)
+const int I2C_SDA_PIN = 21;
+const int I2C_SCL_PIN = 22;
+
+// Voltage divider constants (same 4.7kΩ / 1.1kΩ on all three ADS channels)
+const float DIVIDER_R1       = 4700.0f;  // upper resistor (Ω)
+const float DIVIDER_R2       = 1100.0f;  // lower resistor — ADS side (Ω)
+const float DIVIDER_RATIO    = (DIVIDER_R1 + DIVIDER_R2) / DIVIDER_R2;  // 5.2727
+
+// Pyro line detection threshold (after divider)
+// For 17.8V supply × 22% duty (Config-A) → ~3.9V avg → 0.74V at ADS input.
+// Set threshold at 0.4V to reliably detect all PWM configs.
+const float PYRO_DETECT_THRESHOLD_V = 0.4f;
+
+// Battery thresholds (4S LiPo defaults)
+const uint8_t CELL_COUNT    = 4;
+const float   CELL_CRIT_V   = 3.30f;
+const float   CELL_CUTOFF_V = 3.00f;
+const float   BAT_CRIT      = CELL_CRIT_V   * CELL_COUNT;  // 13.20 V
+const float   BAT_CUTOFF    = CELL_CUTOFF_V * CELL_COUNT;  // 12.00 V
+
+// Task handle for battery monitoring
+TaskHandle_t batteryMonitorTaskHandle = NULL;
 
 /* Flight data logging */
 uint8_t flash_led_pin = 32;                  /*!< LED pin connected to indicate flash memory formatting  */
@@ -1680,6 +1716,77 @@ void checkFlightState(void* pvParameters) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// ADS1115 Helper Functions
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @brief Read voltage from an ADS1115 channel through the voltage divider.
+ * @param adsChannel ADS1115 channel (0-3)
+ * @param numSamples Number of samples to average (default 4)
+ * @return Actual battery/pyro voltage (after divider scaling)
+ */
+float readADSVoltage(uint8_t adsChannel, uint8_t numSamples = 4) {
+    float sum = 0.0f;
+    for (uint8_t i = 0; i < numSamples; i++) {
+        int16_t raw  = ads.readADC_SingleEnded(adsChannel);
+        float   pinV = ads.computeVolts(raw);
+        // Guard: reject out-of-range readings
+        if (pinV < 0.0f || pinV > 3.6f) pinV = 0.0f;
+        sum += pinV * DIVIDER_RATIO;
+        delay(8);
+    }
+    return sum / (float)numSamples;
+}
+
+/**
+ * @brief Check if a pyro line is actively being driven (PWM on).
+ * @param adsChannel ADS1115 channel connected to the pyro line
+ * @return 1 if active (voltage > threshold), 0 otherwise
+ */
+uint8_t readPyroLineState(uint8_t adsChannel) {
+    float v = readADSVoltage(adsChannel, 2);  // fast check with 2 samples
+    return (v >= PYRO_DETECT_THRESHOLD_V) ? 1 : 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════
+// Battery Monitoring Task
+// ═══════════════════════════════════════════════════════════════════════════════════════
+
+/*!****************************************************************************
+ * @brief Continuously monitor battery voltage via ADS1115 channel A2.
+ * Updates the global battery_voltage variable.
+ * Logs critical/cutoff warnings to system log.
+ *******************************************************************************/
+void batteryMonitorTask(void* pvParameters) {
+    const uint32_t BATTERY_CHECK_INTERVAL_MS = 500;  // 2 Hz
+    
+    while (1) {
+        // Read battery voltage from ADS1115 A2 (averaged over 8 samples for stability)
+        battery_voltage = readADSVoltage(ADC_CH_BATTERY, 8);
+        
+        // Safety: log critical battery conditions
+        static uint32_t lastWarningTime = 0;
+        if (battery_voltage <= BAT_CUTOFF && battery_voltage > 1.0f) {
+            if (millis() - lastWarningTime > 10000) {  // warn every 10s
+                debugln("[BATTERY] CUTOFF voltage reached - land immediately!");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
+                                        system_log_file, "[BATTERY CRITICAL] Below cutoff voltage\r\n");
+                lastWarningTime = millis();
+            }
+        } else if (battery_voltage <= BAT_CRIT && battery_voltage > BAT_CUTOFF) {
+            if (millis() - lastWarningTime > 30000) {  // warn every 30s
+                debugln("[BATTERY] Critical voltage - charge soon");
+                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, 
+                                        system_log_file, "[BATTERY WARNING] Critical level\r\n");
+                lastWarningTime = millis();
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+    }
+}
+
 /*!****************************************************************************
  * @brief monitor the chute pins to see if they are deployed
  * @param pvParameters - A value that is passed as the paramater to the created task
@@ -1693,11 +1800,13 @@ void checkFlightState(void* pvParameters) {
 
 void monitorChutePinsTask(void* pvParameters) {
     while (1) {
-        drogue_pin_state = digitalRead(DROGUE_PIN);
-        main_chute_pin_state = digitalRead(MAIN_CHUTE_EJECT_PIN);
+        // Read pyro line states via ADS1115 (detects PWM activity, not GPIO level)
+        // Returns 1 if voltage > threshold (PWM actively driving), 0 otherwise
+        drogue_pin_state = readPyroLineState(ADC_CH_DROGUE);
+        main_chute_pin_state = readPyroLineState(ADC_CH_MAIN);
         
-        // Read battery voltage from pin 35 (with voltage divider)
-        battery_voltage = (analogRead(35) * 3.3 * 2.0) / 4095.0; // Adjust multiplier based on your voltage divider
+        // Note: battery_voltage is now updated by batteryMonitorTask (500ms interval)
+        // No need to read it here anymore - it's handled by the dedicated task
         
         // 🔥 ISOLATED RSSI HANDLING - Separate WiFi and Beacon RSSI logic
         if (comm_manager.isMQTTActive() && WiFi.isConnected()) {
@@ -2298,6 +2407,18 @@ void xCreateAllTasks() {
         tasks_failed++;
         debugln("[-]Failed to create monitorChutePinsTask");
         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]Failed to create monitorChutePinsTask\r\n");
+    }
+    
+    /* 🛡️ BATTERY MONITOR TASK - essential for battery health monitoring via ADS1115 */
+    BaseType_t bm = xTaskCreatePinnedToCore(batteryMonitorTask, "batteryMonitor", STACK_SIZE, NULL, 2, &batteryMonitorTaskHandle, 1);
+    if(bm == pdPASS) {
+        tasks_created++;
+        debugln("[+]batteryMonitorTask created OK.");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]batteryMonitorTask created OK.\r\n");
+    } else {
+        tasks_failed++;
+        debugln("[-]Failed to create batteryMonitorTask");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]Failed to create batteryMonitorTask\r\n");
     } 
 
     /* 🛡️ TRANSMIT TELEMETRY DATA - communication essential (only if MQTT enabled) */
@@ -2588,6 +2709,39 @@ void setup() {
     uint8_t imu_init_state = imu.init();
     debugln("[DEBUG] Starting GPS initialization...");
     uint8_t gps_init_state = GPSInit();
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Initialize ADS1115 for battery and pyro line voltage monitoring
+    // ═══════════════════════════════════════════════════════════════════════════
+    debugln("[DEBUG] Starting ADS1115 initialization...");
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    
+    if (!ads.begin(ADS_ADDR)) {
+        debugln("[-] ADS1115 not found on I2C - battery/pyro monitoring unavailable");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
+                                system_log_file, "ADS1115 init failed - check I2C wiring\r\n");
+    } else {
+        ads.setGain(GAIN_ONE);                  // ±4.096 V, 0.125 mV/LSB
+        ads.setDataRate(RATE_ADS1115_128SPS);   // 128 samples/sec
+        debugln("[+] ADS1115 initialized: I2C 0x48, GAIN_ONE, 128 SPS");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, 
+                                system_log_file, "[+] ADS1115 initialized OK\r\n");
+        
+        // Quick self-test: read battery voltage
+        float initial_battery_v = readADSVoltage(ADC_CH_BATTERY, 4);
+        debug("    Battery voltage at startup: "); debug(String(initial_battery_v, 2)); debugln(" V");
+        
+        if (initial_battery_v < 1.0f) {
+            debugln("    [WARN] Battery voltage reading suspiciously low - check voltage divider");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, 
+                                    system_log_file, "ADS1115 battery reading low - check divider\r\n");
+        } else if (initial_battery_v < BAT_CUTOFF) {
+            debugln("    [WARN] Battery below cutoff voltage - charge before flight!");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
+                                    system_log_file, "Battery critically low at startup\r\n");
+        }
+    }
+    
     debugln("[DEBUG] Disabling all devices...");
     disableAllDevices();
     debugln("[DEBUG] Starting SD initialization...");
