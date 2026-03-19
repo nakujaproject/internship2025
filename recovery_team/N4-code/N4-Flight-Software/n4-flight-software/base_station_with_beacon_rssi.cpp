@@ -3,11 +3,16 @@
 #include "esp_wifi.h"
 #include <ArduinoJson.h>
 
-// Configuration
-uint8_t rocket_mac[] = {0x08, 0xd1, 0xf9, 0x15, 0x9c, 0x40}; // Rocket MAC
+// Configuration Primary FC(glenn)
+// uint8_t rocket_mac[] = {0x08, 0xd1, 0xf9, 0x15, 0x9c, 0x40}; // Rocket MAC
+// uint8_t my_mac[] = {0x10, 0x06, 0x1c, 0xa6, 0x18, 0x20}; // Base MAC
+
+// Configuration Cephas FC
+uint8_t rocket_mac[] = {0x14, 0x08, 0x08, 0xac, 0x8b, 0xf4}; // Rocket MAC
 uint8_t my_mac[] = {0x10, 0x06, 0x1c, 0xa6, 0x18, 0x20}; // Base MAC
 
 //MAC: 10:06:1c:a6:18:20
+// cephas fc  =
 
 bool rocketArmed = false;
 
