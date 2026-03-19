@@ -78,7 +78,7 @@ extern communication_status_t comm_status;
 #endif
 // Simulation toggle: 1 = use internal simulated flight profile & GPS, 0 = use real sensors
 #ifndef USE_SIMULATION
-#define USE_SIMULATION 0
+#define USE_SIMULATION 1
 #endif
 
 #if DEBUGGING
@@ -139,7 +139,7 @@ extern volatile uint8_t MAIN_CHUTE_EJECT_FLAG;     /*!< Set to 1 when main chute
 
 // Arming altitude safety threshold (filtered altitude must exceed this to accept ARM command)
 #ifndef ARM_ALTITUDE_THRESHOLD
-#define ARM_ALTITUDE_THRESHOLD 50            /*!< meters AGL required before accepting ARM command (prevents pad arming) */
+#define ARM_ALTITUDE_THRESHOLD 0             /*!< meters AGL required before accepting ARM command (0 disables the 50m gate) */
 #endif
 
 // Drogue deployment delay after apogee detection

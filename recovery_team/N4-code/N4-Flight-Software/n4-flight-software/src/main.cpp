@@ -51,8 +51,8 @@ uint8_t operation_mode = 0;                                         /*!< Tells w
 bool is_system_armed = false;                                       /*!< Global armed state for all communication modes */
 
 // 🔥 ISOLATED COMMUNICATION SYSTEM - Global variables for independent mode control
-bool use_mqtt_mode = true;                                          /*!< Enable MQTT transmission - starts with MQTT mode */
-bool use_beacon_mode = false;                                       /*!< Enable beacon transmission - starts disabled */
+bool use_mqtt_mode = false;                                         /*!< Enable MQTT transmission - disabled by default for beacon runs */
+bool use_beacon_mode = true;                                        /*!< Enable beacon transmission - default mode */
 bool use_xbee_mode = false;                                         /*!< Enable XBee transmission - controlled by XBEE flag in defs.h */
 bool auto_fallback_enabled = true;                                  /*!< Enable automatic fallback to beacon when MQTT fails */
 bool communication_mode_locked = false;                             /*!< Lock mode changes during critical flight phases */
