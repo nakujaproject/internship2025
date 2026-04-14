@@ -5,7 +5,7 @@
 #include <PubSubClient.h>
 
 // WiFi and MQTT Configuration - UPDATE THESE VALUES
-const char* ssid = "glenphone"; // Your WiFi network name
+const char* ssid = "nakuja_base"; // Your WiFi network name
 const char* password = "012345678900";   // Your WiFi password
 const char* mqtt_server = "172.29.160.182"; // Same IP your React app connects to
 

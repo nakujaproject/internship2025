@@ -80,8 +80,12 @@ typedef struct Telemetry_Data {
     gyro_type_t gyro_data;      /*!< gyroscope data */
     gps_type_t gps_data;        /*!< gps data */
     uint8_t drogue_pin_state;   /*!< drogue parachute deployment state */
+    uint8_t drogue_pin_engaged; /*!< drogue MOSFET/chute line engaged state */
     uint8_t main_chute_pin_state; /*!< main parachute deployment state */
+    uint8_t main_chute_pin_engaged; /*!< main MOSFET/chute line engaged state */
     float battery_voltage;      /*!< battery voltage */
+    float logic_rail_3v3_voltage; /*!< 3.3V rail voltage used for power health */
+    uint8_t power_rail_low;     /*!< 1 if the 3.3V rail is below safe threshold */
     int32_t wifi_rssi;          /*!< WiFi RSSI or beacon RSSI */
     //double kalman_altitude;
     //double kalman_vertical_velocity;

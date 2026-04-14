@@ -82,7 +82,7 @@
 #define PYRO_PWM_RES_BITS     8       // 0–255
 
 // --- Pyro supply voltage (actual main battery at flight computer) -------------
-#define PYRO_SUPPLY_VOLTAGE  17.8f    // volts (Vcc in main.cpp)
+#define PYRO_SUPPLY_VOLTAGE  16.8f    // volts (Vcc in main.cpp)
 
 // ─── Voltage Divider (battery voltage sense) ─────────────────────────────────
 const float R1_OHMS       = 4700.0f;

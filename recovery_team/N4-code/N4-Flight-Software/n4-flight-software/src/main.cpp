@@ -25,6 +25,8 @@
 #include <SPIFFS.h>         // SPIFFS file system function
 #include <esp_task_wdt.h>   // Watchdog timer functions
 #include <ArduinoJson.h>    // JSON parsing for PWM configuration
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "defs.h"           // misc defines
 #include "mpu.h"            // for reading MPU6050
 #include "CustomSerialFlash.h"    // Handling external SPI flash memory
@@ -61,6 +63,22 @@ communication_status_t comm_status = {0};                           /*!< Communi
 // XBee Hardware Serial (UART1 - GPS uses UART2)
 HardwareSerial XBeeSerial(1);  // Use UART1 for XBee (GPS is on UART2)
 
+// I2C bus mutex to prevent concurrent transactions across tasks.
+SemaphoreHandle_t i2c_mutex = NULL;
+
+static inline bool i2cLock(TickType_t timeout) {
+    if (i2c_mutex == NULL) {
+        return true;
+    }
+    return xSemaphoreTake(i2c_mutex, timeout) == pdTRUE;
+}
+
+static inline void i2cUnlock() {
+    if (i2c_mutex != NULL) {
+        xSemaphoreGive(i2c_mutex);
+    }
+}
+
 /* non-task function prototypes definition */
 void initDynamicWIFI();
 void drogueChuteDeploy();
@@ -69,6 +87,7 @@ float kalmanFilter(float z);
 void checkRunTestToggle();
 void non_blocking_buzz(uint16_t interval);
 void blocking_buzz(uint16_t interval);
+void preflightHealthTask(void* pvParameters);
 double altimeter_get_pressure();
 void mqtt_command_processor(const char*, const char*);
 void arm_pyros();
@@ -81,13 +100,17 @@ void chutesInit();
 void checkChuteStatus();
 
 void espnowCommandTask(void* pvParameters);
+void xbeeCommandTask(void* pvParameters);
 SDLogger sdLogger(SD_CS_PIN);
+
+// Forward declaration for globals referenced in early function definitions.
+extern volatile bool g_pyro_pwm_ready;
 
 // 🔥 GLOBAL COMMUNICATION MANAGER - External declaration (defined in communication_manager.cpp)
 extern CommunicationManager comm_manager;
 
 // Global telemetry buffer for seamless mode switching
-static char global_telemetry_buffer[256];
+static char global_telemetry_buffer[320];
 static bool telemetry_data_ready = false;
 static uint32_t last_telemetry_time = 0;
 
@@ -123,7 +146,8 @@ ESP32PWM droguePWM;
 ESP32PWM mainPWM;
 
 // User-specified voltages and durations (configurable via ESP-NOW JSON commands)
-float Vcc = 17.8f;             // input battery voltage
+const float DEFAULT_PWM_VCC_FALLBACK = 16.8f;
+float Vcc = DEFAULT_PWM_VCC_FALLBACK;  // input battery voltage
 float desiredDrogueV = 3.0f;   // desired output voltage at drogue pin
 float desiredMainV   = 10.0f;  // desired output voltage at main pin
 
@@ -267,6 +291,7 @@ void chutesInit() {
     mainPWM.attachPin(MAIN_CHUTE_EJECT_PIN, 1000, 8);
     droguePWM.write(0);
     mainPWM.write(0);
+    g_pyro_pwm_ready = true;
 }
 
 /**
@@ -383,6 +408,13 @@ enum BUZZ_INTERVALS {
   ARMING_PROCEDURE = 500
 };
 
+enum BUZZER_PATTERN : uint8_t {
+        BUZZER_PATTERN_NONE = 0,
+        BUZZER_PATTERN_SHORT_ACK,
+        BUZZER_PATTERN_STARTUP_TEST,
+        BUZZER_PATTERN_STARTUP_FLIGHT
+};
+
 /* LED blink intervals */
 enum BLINK_INTERVALS {
     SAFE_BLINK = 400,
@@ -392,6 +424,77 @@ enum BLINK_INTERVALS {
 unsigned long current_non_block_time = 0;
 unsigned long last_non_block_time = 0;
 bool buzz_state = 0;
+
+volatile uint8_t g_buzzer_pattern_request = BUZZER_PATTERN_NONE;
+volatile bool g_test_mode = (TEST == 1);
+volatile bool g_preflight_block_flight = false;
+volatile bool g_preflight_alarm_active = false;
+volatile bool g_preflight_checks_complete = false;
+volatile uint32_t g_boot_time_ms = 0;
+
+volatile bool g_spiffs_ready = false;
+volatile bool g_bmp_ready = false;
+volatile bool g_imu_ready = false;
+volatile bool g_gps_ready = false;
+volatile bool g_ads_ready = false;
+volatile bool g_altimeter_sample_valid = false;
+volatile bool g_pyro_pwm_ready = false;
+volatile uint8_t drogue_pin_engaged = 0;
+volatile uint8_t main_chute_pin_engaged = 0;
+volatile float logic_rail_3v3_voltage = 3.3f;
+volatile uint8_t g_power_rail_low = 0;
+
+TaskHandle_t preflightHealthTaskHandle = NULL;
+
+static inline void requestBuzzerPattern(uint8_t pattern) {
+    g_buzzer_pattern_request = pattern;
+}
+
+static void buildTelemetryCsv(const telemetry_type_t& telemetry_received_packet, char* buffer, size_t buffer_len) {
+    snprintf(buffer, buffer_len,
+             "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%.2f,%.2f,%d,%d,%.2f,%.2f\n",
+             telemetry_received_packet.record_number,
+             telemetry_received_packet.operation_mode,
+             telemetry_received_packet.state,
+             telemetry_received_packet.acc_data.ax,
+             telemetry_received_packet.acc_data.ay,
+             telemetry_received_packet.acc_data.az,
+             telemetry_received_packet.acc_data.pitch,
+             telemetry_received_packet.acc_data.roll,
+             telemetry_received_packet.gyro_data.gx,
+             telemetry_received_packet.gyro_data.gy,
+             telemetry_received_packet.gyro_data.gz,
+             gps_packet.latitude,
+             gps_packet.longitude,
+             gps_packet.gps_altitude,
+             gps_packet.time,
+             telemetry_received_packet.alt_data.pressure,
+             telemetry_received_packet.alt_data.temperature,
+             telemetry_received_packet.alt_data.rel_altitude,
+             telemetry_received_packet.alt_data.velocity,
+             telemetry_received_packet.drogue_pin_state,
+             telemetry_received_packet.drogue_pin_engaged,
+             telemetry_received_packet.main_chute_pin_state,
+             telemetry_received_packet.main_chute_pin_engaged,
+             telemetry_received_packet.battery_voltage,
+             telemetry_received_packet.logic_rail_3v3_voltage,
+             telemetry_received_packet.power_rail_low,
+             telemetry_received_packet.wifi_rssi,
+             telemetry_received_packet.alt_data.kalman_altitude,
+             telemetry_received_packet.alt_data.kalman_vertical_velocity);
+}
+
+typedef struct {
+    bool sensor_issue;
+    bool battery_issue;
+    bool power_rail_issue;
+    bool chute_line_issue;
+    uint8_t drogue_line_state;
+    uint8_t main_line_state;
+    float measured_battery_voltage;
+    float measured_3v3_voltage;
+    bool has_issue;
+} preflight_check_result_t;
 
 // 🔥 GLOBAL KALMAN FILTER OUTPUTS - Accessible by all tasks
 float AltitudeKalman = 0.0, VelocityVerticalKalman = 0.0;
@@ -444,6 +547,13 @@ const uint8_t ADS_ADDR       = 0x48;
 const uint8_t ADC_CH_BATTERY = 2;   // A2 — battery voltage divider
 const uint8_t ADC_CH_DROGUE  = 1;   // A1 — drogue pin voltage divider
 const uint8_t ADC_CH_MAIN    = 0;   // A0 — main pin voltage divider
+const uint8_t ADC_CH_3V3     = 3;   // A3 — 3.3V rail monitor
+
+// Runtime channel mapping (for auto-detection at boot if needed)
+volatile uint8_t g_adc_ch_battery = ADC_CH_BATTERY;
+volatile uint8_t g_adc_ch_drogue  = ADC_CH_DROGUE;
+volatile uint8_t g_adc_ch_main    = ADC_CH_MAIN;
+volatile float g_ads_rail_factor  = 1.0f;
 
 // I2C pins (ESP32 hardware defaults)
 const int I2C_SDA_PIN = 21;
@@ -465,6 +575,11 @@ const float   CELL_CRIT_V   = 3.30f;
 const float   CELL_CUTOFF_V = 3.00f;
 const float   BAT_CRIT      = CELL_CRIT_V   * CELL_COUNT;  // 13.20 V
 const float   BAT_CUTOFF    = CELL_CUTOFF_V * CELL_COUNT;  // 12.00 V
+const float   BAT_MAX_VALID = 18.5f;                       // upper sanity limit for 4S + margin
+const float   BAT_MIN_PLAUSIBLE_4S = 10.5f;                // reject impossible half-voltage glitches
+
+// ADS availability flag - prevents repeated I2C errors when sensor is absent
+volatile bool ads_monitor_ready = false;
 
 // Task handle for battery monitoring
 TaskHandle_t batteryMonitorTaskHandle = NULL;
@@ -494,7 +609,7 @@ long long current_time = 0;
 long long previous_time = 0;
 
 /* To store the main telemetry packet being sent over MQTT */
-char telemetry_packet_buffer[150];
+char telemetry_packet_buffer[320];
 ring_buffer altitude_ring_buffer;
 double baseline = 0.0; // to store baseline pressure from the altimeter
 float curr_val;
@@ -533,10 +648,26 @@ void initDynamicWIFI() {
 * Check the toggle pin for TESTING or RUN mode 
  */
 void checkRunTestToggle() {
-    if(digitalRead(SET_RUN_MODE_PIN) == 0) {
-        debugln("MODE:RUN");
+    pinMode(SET_TEST_MODE_PIN, INPUT_PULLUP);
+    pinMode(SET_RUN_MODE_PIN, INPUT_PULLUP);
+
+    bool test_pin_grounded = (digitalRead(SET_TEST_MODE_PIN) == LOW);
+    bool run_pin_grounded = (digitalRead(SET_RUN_MODE_PIN) == LOW);
+
+    // Default mode comes from defs.h TEST flag, hardware pins can override at boot.
+    g_test_mode = (TEST == 1);
+
+    if (test_pin_grounded && !run_pin_grounded) {
+        g_test_mode = true;
+        debugln("MODE:TEST (override pin grounded)");
+    } else if (run_pin_grounded && !test_pin_grounded) {
+        g_test_mode = false;
+        debugln("MODE:FLIGHT (override pin grounded)");
+    } else if (run_pin_grounded && test_pin_grounded) {
+        debugln("MODE:PIN CONFLICT (both grounded) -> using defs.h TEST flag");
+        debugln(g_test_mode ? "MODE:TEST" : "MODE:FLIGHT");
     } else {
-        debugln("MODE:TEST");
+        debugln(g_test_mode ? "MODE:TEST (defs.h)" : "MODE:FLIGHT (defs.h)");
     }
 }
 /*!
@@ -559,23 +690,31 @@ void espnowCommandTask(void* pvParameters) {
             size_t len = (cmd.length < (MAX_COMMAND_LENGTH - 1)) ? cmd.length : (MAX_COMMAND_LENGTH - 1);
             memcpy(cmdBuffer, cmd.command, len);
             cmdBuffer[len] = '\0';
-            
-            while (len > 0 && (cmdBuffer[len-1] == ' ' || cmdBuffer[len-1] == '\n' || cmdBuffer[len-1] == '\r')) {
-                cmdBuffer[--len] = '\0';
-            }
+
+            String command = String(cmdBuffer);
+            command.trim();
+            command.toUpperCase();
+
+            debug("[ESP-NOW CMD] Received: ");
+            debugln(command);
 
             // Handle communication mode commands
-            if (strncmp(cmdBuffer, "CMD_MQTT_MODE", 13) == 0 ||
-                strncmp(cmdBuffer, "CMD_BEACON_MODE", 15) == 0 ||
-                strncmp(cmdBuffer, "CMD_XBEE_MODE", 13) == 0 ||
-                strncmp(cmdBuffer, "CMD_AUTO_FALLBACK", 17) == 0 ||
-                strncmp(cmdBuffer, "CMD_GET_MODE", 12) == 0) {
-                comm_manager.handleModeCommand(String(cmdBuffer), "ESP_NOW");
+            if (command.startsWith("CMD_MQTT_MODE") ||
+                command.startsWith("CMD_BEACON_MODE") ||
+                command.startsWith("CMD_XBEE_MODE") ||
+                command.startsWith("CMD_AUTO_FALLBACK") ||
+                command.startsWith("CMD_GET_MODE")) {
+                comm_manager.handleModeCommand(command, "ESP_NOW");
+            }
+            else if (!comm_manager.isBeaconActive()) {
+                // In Beacon mode, ESP-NOW is the active non-mode command channel.
+                continue;
             }
             // Handle PWM configuration command with durations
-            else if (strncmp(cmdBuffer, "CMD_SET_PWM_CONFIG:", 19) == 0) {
+            else if (command.startsWith("CMD_SET_PWM_CONFIG:")) {
                 // Extract JSON payload after "CMD_SET_PWM_CONFIG:"
-                const char* jsonPayload = cmdBuffer + 19;
+                int payloadIndex = command.indexOf(':');
+                const char* jsonPayload = (payloadIndex >= 0) ? command.substring(payloadIndex + 1).c_str() : "";
                 PWMConfig newConfig;
                 
                 if (parsePWMConfig(jsonPayload, newConfig)) {
@@ -594,91 +733,74 @@ void espnowCommandTask(void* pvParameters) {
                     esp_now_send(transmitter.getBaseMAC(), (uint8_t*)error_msg, strlen(error_msg));
                 }
             }
-            else if (strcmp(cmdBuffer, "ARM") == 0) {
+            else if (command == "ARM" || command == "CMD_ARM") {
+                if (!g_test_mode && (!g_preflight_checks_complete || g_preflight_block_flight)) {
+                    debugln("⛔ ARM rejected: preflight checks not satisfied (FLIGHT mode)");
+                    continue;
+                }
+
                 #if USE_KALMAN_FOR_STATE_DETECTION
                 float current_altitude = g_current_telemetry.alt_data.kalman_altitude;
                 #else
                 float current_altitude = g_current_telemetry.alt_data.rel_altitude;
                 #endif
                 
+                // Immediate state change (no blocking operations)
                 arm_pyros();
                 chutesInit();
                 if (use_beacon_mode) transmitter.setArmed(true);
                 is_system_armed = true;
                 operation_mode = OPERATION_MODE::ARMED_MODE;
-                blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+                requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
                 
+                // Debug output only - no SPIFFS logging to avoid delays
                 if ((millis() - g_last_telemetry_update) > 2000) {
                     debugln("⚠️ ARMED via ESP-NOW (Warning: Stale telemetry data)");
-                    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
-                                           system_log_file, "ARMED via ESP-NOW - Stale telemetry data\r\n");
                 } else if (current_altitude < ARM_ALTITUDE_THRESHOLD) {
                     debug("⚠️ ARMED via ESP-NOW (Warning: Low altitude ");
                     debug(current_altitude);
                     debug("m < ");
                     debug(ARM_ALTITUDE_THRESHOLD);
                     debugln("m)");
-                    char log_msg[100];
-                    snprintf(log_msg, sizeof(log_msg), "ARMED via ESP-NOW - Low altitude %.1fm\r\n", current_altitude);
-                    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
-                                           system_log_file, log_msg);
                 } else {
                     debug("🚀 ARMED via ESP-NOW (Alt: ");
                     debug(current_altitude);
                     debugln("m ✓)");
-                    char log_msg[100];
-                    snprintf(log_msg, sizeof(log_msg), "ARMED via ESP-NOW at %.1fm altitude\r\n", current_altitude);
-                    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                           system_log_file, log_msg);
                 }
-                vTaskDelay(pdMS_TO_TICKS(50));
             } 
-            else if (strcmp(cmdBuffer, "DISARM") == 0) {
+            else if (command == "DISARM" || command == "CMD_DISARM") {
+                // Immediate state change (no blocking operations)
                 disarm_pyros();
                 if (use_beacon_mode) transmitter.setArmed(false);
                 is_system_armed = false;
                 operation_mode = OPERATION_MODE::SAFE_MODE;
-                blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+                requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
                 debugln("🛑 DISARMED via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "DISARMED via ESP-NOW\r\n");
-                vTaskDelay(pdMS_TO_TICKS(50));
             } 
-            else if (strcmp(cmdBuffer, "RESET") == 0) {
+            else if (command == "RESET" || command == "CMD_RESET") {
                 debugln("🔄 RESET via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "RESET via ESP-NOW\r\n");
+                // Brief delay but no SPIFFS I/O before restart
                 vTaskDelay(pdMS_TO_TICKS(100));
                 ESP.restart();
             }
-            else if (strcmp(cmdBuffer, "DROGUE_ON") == 0) {
+            else if (command == "DROGUE_ON") {
                 armDroguePyro();
                 debugln("🪂 DROGUE CHUTE ARMED via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "DROGUE CHUTE ARMED via ESP-NOW\r\n");
             }
-            else if (strcmp(cmdBuffer, "DROGUE_OFF") == 0) {
+            else if (command == "DROGUE_OFF") {
                 disarmDroguePyro();
                 debugln("🪂 DROGUE CHUTE DISARMED via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "DROGUE CHUTE DISARMED via ESP-NOW\r\n");
             }
-            else if (strcmp(cmdBuffer, "MAIN_ON") == 0) {
+            else if (command == "MAIN_ON") {
                 armMainPyro();
                 debugln("🪂 MAIN CHUTE ARMED via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "MAIN CHUTE ARMED via ESP-NOW\r\n");
             }
-            else if (strcmp(cmdBuffer, "MAIN_OFF") == 0) {
+            else if (command == "MAIN_OFF") {
                 disarmMainPyro();
                 debugln("🪂 MAIN CHUTE DISARMED via ESP-NOW");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                       system_log_file, "MAIN CHUTE DISARMED via ESP-NOW\r\n");
             }
             else {
-                debugln("Unknown ESP-NOW cmd: " + String(cmdBuffer));
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
-                                       system_log_file, ("Unknown ESP-NOW cmd: " + String(cmdBuffer) + "\r\n").c_str());
+                debugln("Unknown ESP-NOW cmd: " + command);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -691,19 +813,30 @@ void espnowCommandTask(void* pvParameters) {
 void mqtt_command_processor(const char* topic, const char* payload) {
     if(strcmp(topic, "n4/commands") == 0) {
         String command = String(payload);
+        command.trim();
+        command.toUpperCase();
         
         if(command.startsWith("CMD_")) {
             comm_manager.handleModeCommand(command, "MQTT");
             return;
         }
+
+        if (!comm_manager.isMQTTActive()) {
+            return;
+        }
         
-        if(strcmp(payload, "ARM") == 0) {
+        if(command == "ARM" || command == "CMD_ARM") {
+            if (!g_test_mode && (!g_preflight_checks_complete || g_preflight_block_flight)) {
+                debugln("⛔ ARM rejected via MQTT: preflight checks not satisfied (FLIGHT mode)");
+                return;
+            }
+
             arm_pyros();
             chutesInit();
             if (use_beacon_mode) transmitter.setArmed(true);
             is_system_armed = true;
             operation_mode = OPERATION_MODE::ARMED_MODE;
-            blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+            requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
             #if USE_KALMAN_FOR_STATE_DETECTION
             float current_altitude = g_current_telemetry.alt_data.kalman_altitude;
             #else
@@ -712,73 +845,47 @@ void mqtt_command_processor(const char* topic, const char* payload) {
             
             if ((millis() - g_last_telemetry_update) > 2000) {
                 debugln("⚠️ ARMED via MQTT (Warning: Stale telemetry data)");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, 
-                                       system_log_file, "ARMED via MQTT - Stale telemetry data\r\n");
             } else if (current_altitude < ARM_ALTITUDE_THRESHOLD) {
                 debug("⚠️ ARMED via MQTT (Warning: Low altitude ");
                 debug(current_altitude);
                 debugln("m)");
-                char log_msg[100];
-                snprintf(log_msg, sizeof(log_msg), "ARMED via MQTT - Low altitude %.1fm\r\n", current_altitude);
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
-                                       system_log_file, log_msg);
             } else {
                 debug("🚀 ARMED via MQTT (Alt: ");
                 debug(current_altitude);
                 debugln("m ✓)");
-                char log_msg[100];
-                snprintf(log_msg, sizeof(log_msg), "ARMED via MQTT at %.1fm altitude\r\n", current_altitude);
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, 
-                                       system_log_file, log_msg);
             }
-            vTaskDelay(pdMS_TO_TICKS(50));
         } 
-        else if(strcmp(payload, "DISARM") == 0) {
+        else if(command == "DISARM" || command == "CMD_DISARM") {
             disarm_pyros();
             if (use_beacon_mode) transmitter.setArmed(false);
             is_system_armed = false;
             operation_mode = OPERATION_MODE::SAFE_MODE;
-            blocking_buzz(BUZZ_INTERVALS::ARMING_PROCEDURE);
+            requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
             debugln("🛑 DISARMED via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "DISARMED via MQTT\r\n");
-            vTaskDelay(pdMS_TO_TICKS(50));
         } 
-        else if(strcmp(payload, "RESET") == 0) {
+        else if(command == "RESET" || command == "CMD_RESET") {
             debugln("🔄 RESET via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "RESET via MQTT\r\n");
             vTaskDelay(pdMS_TO_TICKS(100));
             ESP.restart();
         }
-        else if(strcmp(payload, "DROGUE_ON") == 0) {
+        else if(command == "DROGUE_ON") {
             armDroguePyro();
             debugln("🪂 DROGUE CHUTE ARMED via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "DROGUE CHUTE ARMED via MQTT\r\n");
         }
-        else if(strcmp(payload, "DROGUE_OFF") == 0) {
+        else if(command == "DROGUE_OFF") {
             disarmDroguePyro();
             debugln("🪂 DROGUE CHUTE DISARMED via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "DROGUE CHUTE DISARMED via MQTT\r\n");
         }
-        else if(strcmp(payload, "MAIN_ON") == 0) {
+        else if(command == "MAIN_ON") {
             armMainPyro();
             debugln("🪂 MAIN CHUTE ARMED via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "MAIN CHUTE ARMED via MQTT\r\n");
         }
-        else if(strcmp(payload, "MAIN_OFF") == 0) {
+        else if(command == "MAIN_OFF") {
             disarmMainPyro();
             debugln("🪂 MAIN CHUTE DISARMED via MQTT");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
-                                   system_log_file, "MAIN CHUTE DISARMED via MQTT\r\n");
         }
         else {
-            debugln("🔍 Unknown MQTT command: " + String(payload));
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
-                                   system_log_file, ("Unknown MQTT command: " + String(payload) + "\r\n").c_str());
+            debugln("🔍 Unknown MQTT command: " + command);
         }
     }
 }
@@ -802,6 +909,7 @@ void mqtt_command_processor(const char* topic, const char* payload) {
  TaskHandle_t MQTT_TransmitTelemetryTaskHandle;
  TaskHandle_t XBee_TransmitTelemetryTaskHandle;
  TaskHandle_t kalmanFilterTaskHandle;
+ TaskHandle_t dmpFIFOPollingTaskHandle;
  
  TaskHandle_t debugToTerminalTaskHandle;
  TaskHandle_t logToMemoryTaskHandle;
@@ -870,7 +978,6 @@ uint8_t InitSPIFFS() {
  */
 uint8_t initSD() {
     if (!SD.begin(SD_CS_PIN)) {
-        delay(100);
         debugln(F("[-]SD Card mounting failed"));
         return 0;
     } else {
@@ -914,7 +1021,15 @@ uint8_t initSD() {
  * 
  *******************************************************************************/
 uint8_t BMPInit() {
-    if(altimeter.begin()) {
+    if (!i2cLock(pdMS_TO_TICKS(50))) {
+        debugln("[+]BMP init failed - I2C busy");
+        return 0;
+    }
+
+    bool ok = altimeter.begin();
+    i2cUnlock();
+
+    if(ok) {
         debugln("[+]BMP init OK.");
         return 1;
     } else {
@@ -930,7 +1045,6 @@ uint8_t BMPInit() {
  *******************************************************************************/
 uint8_t GPSInit() {
     gpsSerial.begin(GPS_BAUD_RATE, SERIAL_8N1, GPS_RX, GPS_TX);
-    delay(50);
 
     debugln("[+]GPS init OK!"); 
 
@@ -960,10 +1074,8 @@ void non_blocking_buzz(uint16_t interval) {
  * @brief blocking buzz 
  */
 void blocking_buzz(uint16_t interval) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    vTaskDelay(pdMS_TO_TICKS(interval)); // Use vTaskDelay to avoid watchdog issues
-    digitalWrite(BUZZER_PIN, LOW);
-    vTaskDelay(pdMS_TO_TICKS(interval)); // Use vTaskDelay to avoid watchdog issues
+    (void)interval;
+    requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
 }
 
 /**
@@ -980,6 +1092,51 @@ QueueHandle_t kalman2d_input_queue_handle;
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////// ACCELERATION AND ROCKET ATTITUDE DETERMINATION /////////////////
+//////////////////////////////////////////////////////////////////////////////////////////////
+
+/*!****************************************************************************
+ * @brief DMP FIFO Polling Task - Reads from MPU6050 FIFO buffer for quaternion-based angles
+ * This task polls the DMP FIFO buffer to get stable yaw/pitch/roll estimates
+ * that minimize drift compared to direct accelerometer angle calculations
+ * @param pvParameters - Task parameters (unused)
+ * @return Continuously updates imu.dmp_data with latest quaternion-derived angles
+ * 
+ *******************************************************************************/
+void dmpFIFOPollingTask(void* pvParameter) {
+    MPU6050::DMPPacket dmp_packet;
+    uint32_t last_dmp_debug_ms = 0;
+    
+    while(1) {
+        // Poll FIFO buffer for latest DMP packet
+        if (imu.pollFIFO(dmp_packet)) {
+            // DMP data successfully read and decoded
+            // dmp_packet now contains:
+            //   - yaw, pitch, roll (degrees, quaternion-derived)
+            //   - gx, gy, gz (deg/s, gyro rates)
+            
+            // Store in imu object for use by readAccelerationTask
+            imu.dmp_data = dmp_packet;
+            
+            // Keep DMP debug lightweight to avoid serial backpressure on high-priority task.
+            if (millis() - last_dmp_debug_ms > 2000) {
+                debug("[DMP] Pitch=");
+                debug(dmp_packet.pitch);
+                debug("° Roll=");
+                debug(dmp_packet.roll);
+                debug("° Yaw=");
+                debug(dmp_packet.yaw);
+                debug("° GyrX=");
+                debug(dmp_packet.gx);
+                debugln("°/s");
+                last_dmp_debug_ms = millis();
+            }
+        }
+        
+        // Keep polling near DMP production rate and yield bus time to other tasks.
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 //////////////////////////////////////////////////////////////////////////////////////////////
 
 /*!****************************************************************************
@@ -1000,27 +1157,49 @@ void readAccelerationTask(void* pvParameter) {
         acc_data_lcl.state = current_state;
         acc_data_lcl.alt_data.rel_altitude = altimeter_packet.rel_altitude;
         acc_data_lcl.drogue_pin_state = drogue_pin_state;
+        acc_data_lcl.drogue_pin_engaged = drogue_pin_engaged;
         acc_data_lcl.main_chute_pin_state = main_chute_pin_state;
+        acc_data_lcl.main_chute_pin_engaged = main_chute_pin_engaged;
         
-        // Use the global battery voltage read by monitorChutePinsTask
+        // Use the global battery voltage read by batteryMonitorTask
         acc_data_lcl.battery_voltage = battery_voltage;
+        acc_data_lcl.logic_rail_3v3_voltage = logic_rail_3v3_voltage;
+        acc_data_lcl.power_rail_low = g_power_rail_low;
         
         // Use the global wifi_rssi read by monitorChutePinsTask
         acc_data_lcl.wifi_rssi = wifi_rssi;
 
-        // read acceleration
-        acc_data_lcl.acc_data.ax = imu.readXAcceleration();
-        acc_data_lcl.acc_data.ay = imu.readYAcceleration();
-        acc_data_lcl.acc_data.az = imu.readZAcceleration();
+        // 🔥 DMP MODE: Use quaternion-derived angles and FIFO gyro to minimize drift
+        if (imu.isDMPReady() && imu.hasFreshDMPPacket(200)) {
+            // Use DMP-derived pitch/roll/gyro from FIFO buffer (more stable, less drift)
+            acc_data_lcl.acc_data.pitch = imu.dmp_data.pitch;
+            acc_data_lcl.acc_data.roll = imu.dmp_data.roll;
+            
+            acc_data_lcl.gyro_data.gx = imu.dmp_data.gx;
+            acc_data_lcl.gyro_data.gy = imu.dmp_data.gy;
+            acc_data_lcl.gyro_data.gz = imu.dmp_data.gz;
 
-        // read angular velocities
-        acc_data_lcl.gyro_data.gx = imu.readXAngularVelocity();
-        acc_data_lcl.gyro_data.gy = imu.readYAngularVelocity();
-        acc_data_lcl.gyro_data.gz = imu.readZAngularVelocity();
+            // Use cached accel values updated by the FIFO polling task to avoid
+            // extra MPU I2C reads from this task.
+            acc_data_lcl.acc_data.ax = imu.acc_x_real;
+            acc_data_lcl.acc_data.ay = imu.acc_y_real;
+            acc_data_lcl.acc_data.az = imu.acc_z_real;
+        } else {
+            // FALLBACK: Legacy mode - direct angle calculations (atan2/asin)
+            // read acceleration
+            acc_data_lcl.acc_data.ax = imu.readXAcceleration();
+            acc_data_lcl.acc_data.ay = imu.readYAcceleration();
+            acc_data_lcl.acc_data.az = imu.readZAcceleration();
 
-        // get pitch and roll
-        acc_data_lcl.acc_data.pitch = imu.getPitch();
-        acc_data_lcl.acc_data.roll = imu.getRoll();
+            // read angular velocities
+            acc_data_lcl.gyro_data.gx = imu.readXAngularVelocity();
+            acc_data_lcl.gyro_data.gy = imu.readYAngularVelocity();
+            acc_data_lcl.gyro_data.gz = imu.readZAngularVelocity();
+
+            // get pitch and roll from accelerometer
+            acc_data_lcl.acc_data.pitch = imu.getPitch();
+            acc_data_lcl.acc_data.roll = imu.getRoll();
+        }
         
         // 🔥 SYNCHRONIZED KALMAN DATA - Include latest Kalman filter results in all telemetry packets
         acc_data_lcl.alt_data = altimeter_packet; // Copy entire altimeter data including Kalman results
@@ -1057,15 +1236,19 @@ void readAccelerationTask(void* pvParameter) {
 double altimeter_get_pressure()
 {
     char status;
-    double T, P, p0, a;
+    double T, P = baseline;
+    if (!i2cLock(pdMS_TO_TICKS(50))) {
+        g_altimeter_sample_valid = false;
+        return P;
+    }
     status = altimeter.startTemperature();
     if(status != 0)
     {
         vTaskDelay(pdMS_TO_TICKS(status)); // Non-blocking delay for FreeRTOS tasks
         status = altimeter.getTemperature(T);
-        altimeter_temperature = T;
         if(status != 0)
         {
+            altimeter_temperature = T;
             status = altimeter.startPressure(3);
             if(status != 0)
             {
@@ -1073,12 +1256,22 @@ double altimeter_get_pressure()
                 status = altimeter.getPressure(P, T);
                 if(status != 0)
                 {
+                    // Normalize to hPa for telemetry (auto-detect Pa vs hPa).
+                    if (P > 2000.0) {
+                        P = P / 100.0;
+                    }
+                    g_altimeter_sample_valid = true;
+                    i2cUnlock();
                     return P;
                 } else debugln("Error getting pressure");
             } else debugln("error starting pressure");
         } else debugln("error getting temperature");
     } else debugln("error starting pressure measurement");
- return P;  
+
+    // On sensor read failure, keep last good pressure (baseline fallback) and mark invalid sample.
+    g_altimeter_sample_valid = false;
+    i2cUnlock();
+    return P;
 }
 
 // /*!****************************************************************************
@@ -1134,9 +1327,29 @@ void readAltimeterTask(void* pvParameters) {
 // Real altimeter task (BMP sensor)
 void readAltimeterTask(void* pvParameters) {
     telemetry_type_t alt_data_lcl;
+    static double last_good_pressure = 1013.25;
+    static double last_good_altitude = 0.0;
+
     while(1) {
         double P = altimeter_get_pressure();
         double a = altimeter.altitude(P, baseline);
+
+        // Reject physically impossible BMP bursts that can cause false apogee transitions.
+        bool pressure_ok = (P > 300.0 && P < 1100.0);
+        bool temp_ok = (altimeter_temperature > -40.0 && altimeter_temperature < 85.0);
+        bool alt_jump_ok = (fabs(a - last_good_altitude) < 80.0); // 80m/sample guard
+        bool sample_ok = g_altimeter_sample_valid && pressure_ok && temp_ok && alt_jump_ok;
+
+        if (!sample_ok) {
+            P = last_good_pressure;
+            a = last_good_altitude;
+            g_altimeter_sample_valid = false;
+        } else {
+            last_good_pressure = P;
+            last_good_altitude = a;
+            g_altimeter_sample_valid = true;
+        }
+
         estimatedAltitude = a;
         float filtered_alt = kalmanFilter(a);
         altimeter_packet.filtered_altitude_1d = filtered_alt;
@@ -1208,6 +1421,12 @@ BLA::Matrix<2,2> F, P, Q, I;
 BLA::Matrix<2,1> G, S, K;
 BLA::Matrix<1,2> H;
 BLA::Matrix<1,1> R, L, inv_L, Acc, M;
+
+// 3-state Kalman (altitude, vertical velocity, vertical acceleration) for robust fusion.
+BLA::Matrix<3,3> KF3_A, KF3_P, KF3_Q, KF3_I;
+BLA::Matrix<2,3> KF3_H;
+BLA::Matrix<2,2> KF3_R;
+BLA::Matrix<3,1> KF3_X;
 
 extern float estimatedAltitude;
 float timeStep = 0.003; // 3ms time step for 2D Kalman filter (matches task delay)
@@ -1331,6 +1550,27 @@ void applyVelocityMeasurementUpdate(BLA::Matrix<1,1>& R_vel) {
   R = {0.3 * 0.3};
   P = {0, 0, 0, 0};
   S = {0, 0};
+
+  // 3-state model based on altitude + acceleration measurement.
+  float dt = timeStep;
+  KF3_A = {1.0f, dt, 0.5f * dt * dt,
+      0.0f, 1.0f, dt,
+      0.0f, 0.0f, 1.0f};
+  KF3_H = {1.0f, 0.0f, 0.0f,
+      0.0f, 0.0f, 1.0f};
+  KF3_P = {1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f,
+      0.0f, 0.0f, 1.0f};
+  KF3_R = {0.25f, 0.0f,
+      0.0f, 0.75f};
+  const float q3 = 0.0001f;
+  KF3_Q = {q3, q3, q3,
+      q3, q3, q3,
+      q3, q3, q3};
+  KF3_I = {1.0f, 0.0f, 0.0f,
+      0.0f, 1.0f, 0.0f,
+      0.0f, 0.0f, 1.0f};
+  KF3_X = {0.0f, 0.0f, 0.0f};
   }
 // Apply Kalman filter to new altitude measurements
 float kalmanFilter(float z) {
@@ -1426,6 +1666,11 @@ void taskKalman2D(void *pvParameters) {
     float previous_altitude = 0.0f;
     telemetry_type_t acc_data_lcl; // For acceleration data access
     static unsigned long last_altitude_update_ms = 0;
+    static bool accel_bias_ready = false;
+    static float accel_bias_sum_g = 0.0f;
+    static uint16_t accel_bias_samples = 0;
+    static unsigned long accel_bias_start_ms = 0;
+    static float accel_z_bias_g = 0.0f;
     
     while (true) {
         // Wait for filtered altitude data from the readAltimeterTask
@@ -1433,8 +1678,34 @@ void taskKalman2D(void *pvParameters) {
             // We need acceleration data for the 2D Kalman filter
             // Read the latest acceleration telemetry from kalman_filter_queue_handle (latest-only)
             if (kalman_filter_queue_handle != NULL && xQueuePeek(kalman_filter_queue_handle, &acc_data_lcl, 0) == pdTRUE) {
-                float offset = 9.425; // Adjust this offset based on your calibration
-                float AccYInertial = (acc_data_lcl.acc_data.az * 9.8) - offset;
+                // Preflight accel bias calibration to remove static gravity offset.
+                if (!accel_bias_ready && current_state == ARMED_FLIGHT_STATE::PRE_FLIGHT_GROUND) {
+                    if (accel_bias_start_ms == 0) {
+                        accel_bias_start_ms = millis();
+                    }
+                    accel_bias_sum_g += acc_data_lcl.acc_data.az;
+                    accel_bias_samples++;
+                    if ((millis() - accel_bias_start_ms) >= 2000 && accel_bias_samples >= 20) {
+                        accel_z_bias_g = accel_bias_sum_g / accel_bias_samples;
+                        accel_bias_ready = true;
+                    }
+                }
+
+                float AccYInertial = 0.0f;
+                if (accel_bias_ready) {
+                    AccYInertial = (acc_data_lcl.acc_data.az - accel_z_bias_g) * 9.80665f;
+                } else {
+                    float offset = 9.425f; // Fallback until bias is ready
+                    AccYInertial = (acc_data_lcl.acc_data.az * 9.8f) - offset;
+                }
+
+                // In stationary/preflight conditions, suppress tiny bias acceleration so
+                // Kalman velocity/altitude don't drift away from zero on the bench.
+                bool likely_stationary = (!is_system_armed) && (fabsf(input_altitude) < 1.0f);
+                if (likely_stationary && fabsf(AccYInertial) < 0.8f) {
+                    AccYInertial = 0.0f;
+                }
+
                 Acc = {AccYInertial};
             } else {
                 // If no acceleration data available, use 0
@@ -1445,7 +1716,7 @@ void taskKalman2D(void *pvParameters) {
             //Serial.printf("Raw Alt: %.2f  Acc: %.2f\n", altimeter_packet.filtered_altitude_1d, AccYInertial);
             //Serial.printf("Before Prediction S: %.4f %.4f\n", S(0,0), S(1,0));
 
-            // PREDICTION
+            // PREDICTION (2-state)
             S = F * S + G * Acc;
             P = F * P * ~F + Q;
 
@@ -1472,9 +1743,25 @@ void taskKalman2D(void *pvParameters) {
 
             S = S + K * (M - H * S);
 
+            // PREDICTION + UPDATE (3-state altitude/velocity/acceleration model)
+            BLA::Matrix<2,1> Z3 = {input_altitude, (float)Acc(0, 0)};
+            BLA::Matrix<3,1> X3_minus = KF3_A * KF3_X;
+            BLA::Matrix<3,3> P3_minus = KF3_A * KF3_P * (~KF3_A) + KF3_Q;
+            BLA::Matrix<2,2> S3_cov = KF3_H * P3_minus * (~KF3_H) + KF3_R;
+
+            if (fabs(S3_cov(0, 0)) > 1e-6f && fabs(S3_cov(1, 1)) > 1e-6f) {
+                BLA::Matrix<3,2> K3 = P3_minus * (~KF3_H) * Inverse(S3_cov);
+                KF3_X = X3_minus + K3 * (Z3 - KF3_H * X3_minus);
+                KF3_P = (KF3_I - K3 * KF3_H) * P3_minus;
+            } else {
+                KF3_X = X3_minus;
+                KF3_P = P3_minus;
+            }
+
             //  FINAL VALUES
-            AltitudeKalman = S(0, 0);
-            VelocityVerticalKalman = S(1, 0);
+            // Fuse classic 2-state and new 3-state estimates to improve robustness.
+            AltitudeKalman = (0.60f * S(0, 0)) + (0.40f * KF3_X(0, 0));
+            VelocityVerticalKalman = (0.60f * S(1, 0)) + (0.40f * KF3_X(1, 0));
             
             // ============================================================================
             // 🔧 ZUPT APPLICATION - Velocity drift correction when stationary
@@ -1543,8 +1830,12 @@ void taskKalman2D(void *pvParameters) {
             telemetry_out.operation_mode = operation_mode;
             telemetry_out.state = current_state;
             telemetry_out.drogue_pin_state = drogue_pin_state;
+            telemetry_out.drogue_pin_engaged = drogue_pin_engaged;
             telemetry_out.main_chute_pin_state = main_chute_pin_state;
+            telemetry_out.main_chute_pin_engaged = main_chute_pin_engaged;
             telemetry_out.battery_voltage = battery_voltage;
+            telemetry_out.logic_rail_3v3_voltage = logic_rail_3v3_voltage;
+            telemetry_out.power_rail_low = g_power_rail_low;
             telemetry_out.wifi_rssi = wifi_rssi;
             static uint32_t kalman_record_counter = 0;
             telemetry_out.record_number = ++kalman_record_counter;
@@ -1656,6 +1947,8 @@ extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskNa
 void checkFlightState(void* pvParameters) {
     telemetry_type_t flight_data;
     static uint8_t last_state = 0xFF;
+    static float max_altitude = 0.0f;
+    static uint8_t descent_count = 0;
 
     while (1) {
         xQueueReceive(check_state_queue_handle, &flight_data, portMAX_DELAY);
@@ -1670,6 +1963,17 @@ void checkFlightState(void* pvParameters) {
         // Update global telemetry for ARM altitude check
         g_current_telemetry = flight_data;
         g_last_telemetry_update = millis();
+
+        // Do not run flight state transitions while disarmed or with invalid baro samples.
+        if (!is_system_armed || !g_altimeter_sample_valid) {
+            current_state = ARMED_FLIGHT_STATE::PRE_FLIGHT_GROUND;
+            apogee_flag = 0;
+            apogee_val = 0;
+            max_altitude = 0.0f;
+            descent_count = 0;
+            vTaskDelay(pdMS_TO_TICKS(STATE_CHANGE_DELAY));
+            continue;
+        }
 
         // // 🚀 AUTOMATIC ARMING DISABLED - Only manual ARM commands will arm the system
         // if (!is_system_armed && alt >= ARM_ALTITUDE_THRESHOLD) {
@@ -1881,15 +2185,34 @@ void checkFlightState(void* pvParameters) {
  * @return Actual battery/pyro voltage (after divider scaling)
  */
 float readADSVoltage(uint8_t adsChannel, uint8_t numSamples = 4) {
+    if (!ads_monitor_ready) {
+        return 0.0f;
+    }
+
+    if (!i2cLock(pdMS_TO_TICKS(50))) {
+        return 0.0f;
+    }
+
+    auto railCalibrationFactor = [&](uint8_t channel) -> float {
+        if (channel == ADC_CH_3V3) {
+            return 1.0f;
+        }
+        float factor = logic_rail_3v3_voltage / 3.3f;
+        if (factor < 0.85f) factor = 0.85f;
+        if (factor > 1.15f) factor = 1.15f;
+        return factor;
+    };
+
     float sum = 0.0f;
     for (uint8_t i = 0; i < numSamples; i++) {
         int16_t raw  = ads.readADC_SingleEnded(adsChannel);
         float   pinV = ads.computeVolts(raw);
         // Guard: reject out-of-range readings
         if (pinV < 0.0f || pinV > 3.6f) pinV = 0.0f;
-        sum += pinV * DIVIDER_RATIO;
-        delay(8);
+        sum += pinV * DIVIDER_RATIO * railCalibrationFactor(adsChannel);
+        taskYIELD();
     }
+    i2cUnlock();
     return sum / (float)numSamples;
 }
 
@@ -1899,8 +2222,102 @@ float readADSVoltage(uint8_t adsChannel, uint8_t numSamples = 4) {
  * @return 1 if active (voltage > threshold), 0 otherwise
  */
 uint8_t readPyroLineState(uint8_t adsChannel) {
-    float v = readADSVoltage(adsChannel, 2);  // fast check with 2 samples
-    return (v >= PYRO_DETECT_THRESHOLD_V) ? 1 : 0;
+    if (!ads_monitor_ready) {
+        return 0;
+    }
+
+    // Debounced, hysteretic voltage detection to avoid floating-line false positives.
+    // A pyro line is considered ACTIVE only after repeated high-voltage confirmations.
+    static uint8_t stableState[4] = {0, 0, 0, 0};
+    static uint8_t highCount[4]   = {0, 0, 0, 0};
+    static uint8_t lowCount[4]    = {0, 0, 0, 0};
+
+    uint8_t ch = (adsChannel <= 3) ? adsChannel : 0;
+    float lineV = readADSVoltage(ch, 3);
+
+    // Use measured battery as dynamic reference. When battery is invalid, use fallback.
+    float supplyRef = ((battery_voltage >= BAT_CUTOFF) && (battery_voltage <= BAT_MAX_VALID))
+                      ? battery_voltage
+                      : DEFAULT_PWM_VCC_FALLBACK;
+
+    // ON threshold: 15% of supply or absolute floor, whichever is higher.
+    // Example at 15.0V => 2.25V threshold, which is far above noise/floating levels.
+    float onThreshold = supplyRef * 0.15f;
+    if (onThreshold < PYRO_DETECT_THRESHOLD_V) {
+        onThreshold = PYRO_DETECT_THRESHOLD_V;
+    }
+    float offThreshold = onThreshold * 0.40f; // Schmitt-style hysteresis
+
+    if (stableState[ch] == 0) {
+        if (lineV >= onThreshold) {
+            highCount[ch]++;
+            if (highCount[ch] >= 3) {
+                stableState[ch] = 1;
+                highCount[ch] = 0;
+                lowCount[ch] = 0;
+            }
+        } else {
+            highCount[ch] = 0;
+        }
+    } else {
+        if (lineV <= offThreshold) {
+            lowCount[ch]++;
+            if (lowCount[ch] >= 3) {
+                stableState[ch] = 0;
+                highCount[ch] = 0;
+                lowCount[ch] = 0;
+            }
+        } else {
+            lowCount[ch] = 0;
+        }
+    }
+
+    return stableState[ch];
+}
+
+/*!****************************************************************************
+ * @brief Initialize ADS1115 battery + chute monitoring (sensor-style init)
+ * @return 1 if init OK, 0 otherwise
+ *******************************************************************************/
+uint8_t ADSInit() {
+    if (!i2cLock(pdMS_TO_TICKS(100))) {
+        ads_monitor_ready = false;
+        battery_voltage = DEFAULT_PWM_VCC_FALLBACK;
+        Vcc = DEFAULT_PWM_VCC_FALLBACK;
+        debugln("[-] ADS1115 init failed - I2C busy");
+        return 0;
+    }
+
+    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+    Wire.setTimeOut(50);
+
+    if (!ads.begin(ADS_ADDR)) {
+        i2cUnlock();
+        ads_monitor_ready = false;
+        battery_voltage = DEFAULT_PWM_VCC_FALLBACK;
+        Vcc = DEFAULT_PWM_VCC_FALLBACK;
+        debugln("[-] ADS1115 init failed - using fallback battery voltage 16.8V");
+        return 0;
+    }
+
+    ads.setGain(GAIN_ONE);                  // +/-4.096 V, 0.125 mV/LSB
+    ads.setDataRate(RATE_ADS1115_128SPS);   // 128 samples/sec
+    ads_monitor_ready = true;
+    i2cUnlock();
+
+    float startup_battery_v = readADSVoltage(ADC_CH_BATTERY, 4);
+    if (startup_battery_v >= 6.0f && startup_battery_v <= BAT_MAX_VALID) {
+        battery_voltage = startup_battery_v;
+        Vcc = startup_battery_v;
+    } else {
+        battery_voltage = DEFAULT_PWM_VCC_FALLBACK;
+        Vcc = DEFAULT_PWM_VCC_FALLBACK;
+    }
+
+    debug("[+] ADS1115 init OK. Battery=");
+    debug(String(battery_voltage, 2));
+    debugln("V");
+    return 1;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════
@@ -1914,30 +2331,361 @@ uint8_t readPyroLineState(uint8_t adsChannel) {
  *******************************************************************************/
 void batteryMonitorTask(void* pvParameters) {
     const uint32_t BATTERY_CHECK_INTERVAL_MS = 500;  // 2 Hz
+    static float stable_battery_v = DEFAULT_PWM_VCC_FALLBACK;
+    static bool stable_initialized = false;
+    static bool stable_seeded_from_init = false;
+    static uint8_t jump_count = 0;
+    static uint8_t low_cutoff_confirm_count = 0;
+    static uint8_t low_crit_confirm_count = 0;
+    const uint8_t CUTOFF_CONFIRM_SAMPLES = 6; // 3s at 500ms cadence
+    const uint8_t CRIT_CONFIRM_SAMPLES = 6;   // 3s at 500ms cadence
+    const uint8_t LARGE_JUMP_CONFIRM_SAMPLES = 8; // 4s for large steps
+    const float LARGE_JUMP_THRESHOLD_V = 2.5f;
     
     while (1) {
-        // Read battery voltage from ADS1115 A2 (averaged over 8 samples for stability)
-        battery_voltage = readADSVoltage(ADC_CH_BATTERY, 8);
+        #if USE_SIMULATION
+        // In simulation mode, battery telemetry should be deterministic.
+        battery_voltage = DEFAULT_PWM_VCC_FALLBACK;
+        Vcc = DEFAULT_PWM_VCC_FALLBACK;
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+        continue;
+        #endif
+
+        if (!ads_monitor_ready) {
+            // ADS1115 not present: keep fallback and avoid I2C traffic.
+            // Keep last stable estimate to ride through transient I2C/ADS faults.
+            battery_voltage = stable_initialized ? stable_battery_v : DEFAULT_PWM_VCC_FALLBACK;
+            Vcc = battery_voltage;
+            logic_rail_3v3_voltage = 3.3f;
+            g_ads_rail_factor = 1.0f;
+            g_power_rail_low = 0;
+            vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+            continue;
+        }
+
+        float measured_3v3_v = readADSVoltage(ADC_CH_3V3, 4);
+        if (measured_3v3_v >= 0.5f && measured_3v3_v <= 4.0f) {
+            logic_rail_3v3_voltage = measured_3v3_v;
+        }
+        g_ads_rail_factor = logic_rail_3v3_voltage / 3.3f;
+        if (g_ads_rail_factor < 0.85f) g_ads_rail_factor = 0.85f;
+        if (g_ads_rail_factor > 1.15f) g_ads_rail_factor = 1.15f;
+        g_power_rail_low = (logic_rail_3v3_voltage < 3.0f) ? 1 : 0;
+
+        // Read battery voltage and use it for PWM supply math.
+        float measured_battery_v = readADSVoltage(ADC_CH_BATTERY, 8);
+
+        if (g_power_rail_low) {
+            battery_voltage = stable_battery_v;
+            Vcc = stable_battery_v;
+            vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+            continue;
+        }
+
+        // Accept physically sane values; low battery is valid and must not be replaced by fallback.
+        bool plausible = (measured_battery_v >= BAT_MIN_PLAUSIBLE_4S && measured_battery_v <= BAT_MAX_VALID);
+
+        // Seed stable value from ADSInit result to avoid locking to a noisy first sample.
+        if (!stable_seeded_from_init) {
+            if (battery_voltage >= BAT_MIN_PLAUSIBLE_4S && battery_voltage <= BAT_MAX_VALID) {
+                stable_battery_v = battery_voltage;
+                stable_initialized = true;
+            }
+            stable_seeded_from_init = true;
+        }
+
+        // Initialize tracking from first valid sample to avoid locking to fallback 16.8V.
+        if (plausible && !stable_initialized) {
+            stable_battery_v = measured_battery_v;
+            battery_voltage = measured_battery_v;
+            Vcc = measured_battery_v;
+            stable_initialized = true;
+            jump_count = 0;
+            vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+            continue;
+        }
+
+        float delta = fabsf(measured_battery_v - stable_battery_v);
+
+        if (plausible && delta <= 1.0f) {
+            jump_count = 0;
+            stable_battery_v = (0.80f * stable_battery_v) + (0.20f * measured_battery_v);
+            battery_voltage = stable_battery_v;
+            Vcc = stable_battery_v;
+        } else if (plausible && delta <= 2.0f) {
+            // Require persistence for larger jumps before accepting.
+            jump_count++;
+            if (jump_count >= 3) {
+                stable_battery_v = measured_battery_v;
+                battery_voltage = stable_battery_v;
+                Vcc = stable_battery_v;
+                jump_count = 0;
+            } else {
+                battery_voltage = stable_battery_v;
+                Vcc = stable_battery_v;
+            }
+        } else if (plausible && delta > LARGE_JUMP_THRESHOLD_V) {
+            // Large steps need longer confirmation (bad first sample or wiring glitch).
+            jump_count++;
+            if (jump_count >= LARGE_JUMP_CONFIRM_SAMPLES) {
+                stable_battery_v = measured_battery_v;
+                battery_voltage = stable_battery_v;
+                Vcc = stable_battery_v;
+                jump_count = 0;
+            } else {
+                battery_voltage = stable_battery_v;
+                Vcc = stable_battery_v;
+            }
+        } else {
+            // Keep last stable value instead of propagating bad ADS samples.
+            jump_count = 0;
+            battery_voltage = stable_battery_v;
+            Vcc = stable_battery_v;
+        }
         
-        // Safety: log critical battery conditions
+        // Safety: low-battery warnings with persistence filtering to ignore short glitches.
         static uint32_t lastWarningTime = 0;
         if (battery_voltage <= BAT_CUTOFF && battery_voltage > 1.0f) {
-            if (millis() - lastWarningTime > 10000) {  // warn every 10s
+            if (low_cutoff_confirm_count < CUTOFF_CONFIRM_SAMPLES) {
+                low_cutoff_confirm_count++;
+            }
+            low_crit_confirm_count = 0;
+
+            if (low_cutoff_confirm_count >= CUTOFF_CONFIRM_SAMPLES && (millis() - lastWarningTime > 10000)) {  // warn every 10s
                 debugln("[BATTERY] CUTOFF voltage reached - land immediately!");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
-                                        system_log_file, "[BATTERY CRITICAL] Below cutoff voltage\r\n");
                 lastWarningTime = millis();
             }
         } else if (battery_voltage <= BAT_CRIT && battery_voltage > BAT_CUTOFF) {
-            if (millis() - lastWarningTime > 30000) {  // warn every 30s
+            if (low_crit_confirm_count < CRIT_CONFIRM_SAMPLES) {
+                low_crit_confirm_count++;
+            }
+            low_cutoff_confirm_count = 0;
+
+            if (low_crit_confirm_count >= CRIT_CONFIRM_SAMPLES && (millis() - lastWarningTime > 30000)) {  // warn every 30s
                 debugln("[BATTERY] Critical voltage - charge soon");
-                SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, 
-                                        system_log_file, "[BATTERY WARNING] Critical level\r\n");
                 lastWarningTime = millis();
             }
+        } else {
+            low_cutoff_confirm_count = 0;
+            low_crit_confirm_count = 0;
         }
         
         vTaskDelay(pdMS_TO_TICKS(BATTERY_CHECK_INTERVAL_MS));
+    }
+}
+
+/*!****************************************************************************
+ * @brief FLIGHT mode preflight gate with 1-minute grace period.
+ * In FLIGHT mode, ARM is blocked until checks pass.
+ * If issues persist beyond grace period, buzzer/LED alarm is enabled.
+ *******************************************************************************/
+void preflightHealthTask(void* pvParameters) {
+    const uint32_t PREFLIGHT_GRACE_MS = 60000;
+    uint32_t last_report_ms = 0;
+    bool last_block_state = false;
+    uint8_t preflight_battery_low_confirm_count = 0;
+    const uint8_t PREFLIGHT_BATTERY_CONFIRM_SAMPLES = 5; // 1s at 200ms loop cadence
+
+    auto forcePyroOutputsSafe = []() {
+        // Force all pyro-related outputs low without blocking delays.
+        digitalWrite(REMOTE_SWITCH, LOW);
+        if (g_pyro_pwm_ready) {
+            droguePWM.write(0);
+            mainPWM.write(0);
+        }
+        digitalWrite(DROGUE_PIN, LOW);
+        digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW);
+
+        drogueActive = false;
+        mainActive = false;
+        droguePyroArmed = false;
+        mainPyroArmed = false;
+        DROGUE_DEPLOY_FLAG = 0;
+        MAIN_CHUTE_EJECT_FLAG = 0;
+        drogue_pin_state = 0;
+        main_chute_pin_state = 0;
+        drogue_pin_engaged = 0;
+        main_chute_pin_engaged = 0;
+    };
+
+    auto runStandardPreflightChecks = [&forcePyroOutputsSafe, &preflight_battery_low_confirm_count]() -> preflight_check_result_t {
+        preflight_check_result_t r = {0};
+
+        r.sensor_issue = (!g_spiffs_ready || !g_bmp_ready || !g_imu_ready || !g_gps_ready || !g_ads_ready);
+        r.power_rail_issue = (g_power_rail_low != 0);
+
+        // Explicit battery measurement for preflight validation.
+        // Keep direct reads, but only raise issue after repeated low confirmations.
+        if (g_ads_ready && ads_monitor_ready) {
+            float measured = readADSVoltage(ADC_CH_BATTERY, 8);
+
+            if (measured >= 1.0f && measured <= 20.0f) {
+                r.measured_battery_voltage = measured;
+            } else {
+                r.measured_battery_voltage = battery_voltage;
+            }
+
+            bool raw_battery_issue = (r.measured_battery_voltage < BAT_CUTOFF) || (r.measured_battery_voltage > BAT_MAX_VALID);
+            if (raw_battery_issue) {
+                if (preflight_battery_low_confirm_count < 255) {
+                    preflight_battery_low_confirm_count++;
+                }
+            } else {
+                preflight_battery_low_confirm_count = 0;
+            }
+            r.battery_issue = (preflight_battery_low_confirm_count >= PREFLIGHT_BATTERY_CONFIRM_SAMPLES);
+        } else {
+            r.measured_battery_voltage = battery_voltage;
+            r.battery_issue = false;
+            preflight_battery_low_confirm_count = 0;
+        }
+
+        r.measured_3v3_voltage = logic_rail_3v3_voltage;
+
+        // Explicit chute line measurement for preflight validation.
+        if (g_ads_ready && ads_monitor_ready) {
+            r.drogue_line_state = readPyroLineState(ADC_CH_DROGUE);
+            r.main_line_state = readPyroLineState(ADC_CH_MAIN);
+        } else {
+            r.drogue_line_state = isDrogueOn() ? 1 : 0;
+            r.main_line_state = isMainOn() ? 1 : 0;
+        }
+
+        bool switch_high = (digitalRead(REMOTE_SWITCH) == HIGH);
+        r.chute_line_issue = (r.drogue_line_state != 0) ||
+                             (r.main_line_state != 0) ||
+                             switch_high ||
+                             drogueActive || mainActive ||
+                             droguePyroArmed || mainPyroArmed;
+
+        // If any chute output looks active during preflight, force everything safe.
+        if (r.chute_line_issue) {
+            forcePyroOutputsSafe();
+        }
+
+        r.has_issue = r.sensor_issue || r.battery_issue || r.power_rail_issue || r.chute_line_issue;
+        return r;
+    };
+
+    while (1) {
+        preflight_check_result_t checks = runStandardPreflightChecks();
+        uint32_t elapsed_ms = millis() - g_boot_time_ms;
+
+        if (g_test_mode) {
+            g_preflight_checks_complete = true;
+            g_preflight_block_flight = false;
+            g_preflight_alarm_active = false;
+
+            if (checks.has_issue && (millis() - last_report_ms) > 5000) {
+                debugln("[TEST MODE] Preflight issue detected (data transmission continues):");
+                if (checks.battery_issue) {
+                    debug("  - Battery out of range: ");
+                    debug(checks.measured_battery_voltage);
+                    debugln("V");
+                }
+                if (checks.power_rail_issue) {
+                    debug("  - 3.3V rail low: ");
+                    debug(checks.measured_3v3_voltage);
+                    debugln("V");
+                }
+                if (checks.chute_line_issue) {
+                    debug("  - Chute outputs were non-zero (drogue=");
+                    debug(checks.drogue_line_state);
+                    debug(", main=");
+                    debug(checks.main_line_state);
+                    debugln(") -> forced OFF");
+                }
+                if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
+                if (!g_bmp_ready) debugln("  - BMP180 init failed");
+                if (!g_imu_ready) debugln("  - IMU init failed");
+                if (!g_gps_ready) debugln("  - GPS init failed");
+                if (!g_ads_ready) debugln("  - ADS1115 init failed");
+                last_report_ms = millis();
+            }
+        } else {
+            if (elapsed_ms < PREFLIGHT_GRACE_MS) {
+                g_preflight_checks_complete = false;
+                g_preflight_block_flight = true;
+                g_preflight_alarm_active = false;
+
+                if (checks.has_issue && (millis() - last_report_ms) > 5000) {
+                    debug("[FLIGHT MODE] Preflight grace period active, ");
+                    debug((PREFLIGHT_GRACE_MS - elapsed_ms) / 1000);
+                    debugln("s remaining");
+                    if (checks.battery_issue) {
+                        debug("  - Battery out of range: ");
+                        debug(checks.measured_battery_voltage);
+                        debugln("V");
+                    }
+                    if (checks.power_rail_issue) {
+                        debug("  - 3.3V rail low: ");
+                        debug(checks.measured_3v3_voltage);
+                        debugln("V");
+                    }
+                    if (checks.chute_line_issue) {
+                        debug("  - Chute outputs were non-zero (drogue=");
+                        debug(checks.drogue_line_state);
+                        debug(", main=");
+                        debug(checks.main_line_state);
+                        debugln(") -> forced OFF");
+                    }
+                    if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
+                    if (!g_bmp_ready) debugln("  - BMP180 init failed");
+                    if (!g_imu_ready) debugln("  - IMU init failed");
+                    if (!g_gps_ready) debugln("  - GPS init failed");
+                    if (!g_ads_ready) debugln("  - ADS1115 init failed");
+                    last_report_ms = millis();
+                }
+            } else {
+                g_preflight_checks_complete = true;
+                g_preflight_block_flight = checks.has_issue;
+                g_preflight_alarm_active = checks.has_issue;
+
+                if (g_preflight_block_flight && is_system_armed) {
+                    disarm_pyros();
+                    if (use_beacon_mode) {
+                        transmitter.setArmed(false);
+                    }
+                    is_system_armed = false;
+                    operation_mode = OPERATION_MODE::SAFE_MODE;
+                    debugln("[FLIGHT MODE] System forced to SAFE due to failed preflight checks");
+                }
+
+                if ((millis() - last_report_ms) > 2000) {
+                    if (checks.has_issue) {
+                        debugln("[FLIGHT MODE] Preflight FAILED - ARM blocked");
+                        if (checks.battery_issue) {
+                            debug("  - Battery out of range: ");
+                            debug(checks.measured_battery_voltage);
+                            debugln("V");
+                        }
+                        if (checks.power_rail_issue) {
+                            debug("  - 3.3V rail low: ");
+                            debug(checks.measured_3v3_voltage);
+                            debugln("V");
+                        }
+                        if (checks.chute_line_issue) {
+                            debug("  - Chute outputs were non-zero (drogue=");
+                            debug(checks.drogue_line_state);
+                            debug(", main=");
+                            debug(checks.main_line_state);
+                            debugln(") -> forced OFF");
+                        }
+                        if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
+                        if (!g_bmp_ready) debugln("  - BMP180 init failed");
+                        if (!g_imu_ready) debugln("  - IMU init failed");
+                        if (!g_gps_ready) debugln("  - GPS init failed");
+                        if (!g_ads_ready) debugln("  - ADS1115 init failed");
+                    } else if (last_block_state) {
+                        debugln("[FLIGHT MODE] Preflight PASSED - ARM enabled");
+                    }
+                    last_report_ms = millis();
+                }
+            }
+        }
+
+        last_block_state = g_preflight_block_flight;
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
@@ -1954,10 +2702,27 @@ void batteryMonitorTask(void* pvParameters) {
 
 void monitorChutePinsTask(void* pvParameters) {
     while (1) {
+        if (!is_system_armed) {
+            // While disarmed, report both pyros as OFF to avoid false-positive telemetry.
+            drogue_pin_state = 0;
+            main_chute_pin_state = 0;
+            drogue_pin_engaged = 0;
+            main_chute_pin_engaged = 0;
+        } else 
         // Read pyro line states via ADS1115 (detects PWM activity, not GPIO level)
-        // Returns 1 if voltage > threshold (PWM actively driving), 0 otherwise
-        drogue_pin_state = readPyroLineState(ADC_CH_DROGUE);
-        main_chute_pin_state = readPyroLineState(ADC_CH_MAIN);
+        // Returns 1 if voltage > threshold (PWM actively driving), 0 otherwise.
+        // If ADS is unavailable, fall back to software activation state.
+        if (ads_monitor_ready) {
+            drogue_pin_state = readPyroLineState(ADC_CH_DROGUE);
+            main_chute_pin_state = readPyroLineState(ADC_CH_MAIN);
+            drogue_pin_engaged = drogue_pin_state;
+            main_chute_pin_engaged = main_chute_pin_state;
+        } else {
+            drogue_pin_state = isDrogueOn() ? 1 : 0;
+            main_chute_pin_state = isMainOn() ? 1 : 0;
+            drogue_pin_engaged = drogue_pin_state;
+            main_chute_pin_engaged = main_chute_pin_state;
+        }
         
         // Note: battery_voltage is now updated by batteryMonitorTask (500ms interval)
         // No need to read it here anymore - it's handled by the dedicated task
@@ -1990,18 +2755,6 @@ void flightStateCallback(void* pvParameters) {
     while(1) {
     // Read drogue and main chute pin states using digitalRead
         if (current_state != last_state) {
-            // Lock communication modes during active flight (powered flight through drogue descent)
-            if (current_state == ARMED_FLIGHT_STATE::POWERED_FLIGHT) {
-                comm_manager.lockCommunicationMode(true);
-                debugln("[FLIGHT STATE] Communication modes locked for flight");
-            }
-            // Unlock after main chute deployment when flight is essentially over
-            else if (current_state == ARMED_FLIGHT_STATE::MAIN_DESCENT && 
-                     last_state != ARMED_FLIGHT_STATE::MAIN_DESCENT) {
-                comm_manager.lockCommunicationMode(false);
-                debugln("[FLIGHT STATE] Communication modes unlocked after main deployment");
-            }
-            
             last_state = current_state;
         }
         
@@ -2098,49 +2851,32 @@ void flightStateCallback(void* pvParameters) {
  *******************************************************************************/
 void debugToTerminalTask(void* pvParameters){
     telemetry_type_t telemetry_received_packet; // acceleration received from acceleration_queue
+    static uint32_t last_timeout_log_ms = 0;
 
     while(true){
         // get telemetry data - block until a telemetry packet is available to avoid stale/duplicate prints
         if (debug_to_term_queue_handle != NULL) {
-            xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, portMAX_DELAY); // FIX: block for fresh telemetry
+            if (xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, pdMS_TO_TICKS(1000)) != pdTRUE) {
+                if (millis() - last_timeout_log_ms > 5000) {
+                    Serial.println("[DEBUG] Telemetry timeout - no new packets");
+                    last_timeout_log_ms = millis();
+                }
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
         } else {
             // If queue not configured, yield briefly
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         
-        // Create unified 25-field CSV format with Kalman filter outputs
-        sprintf(telemetry_packet_buffer,
-                "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f,%d,%.2f,%.2f\n",
-                telemetry_received_packet.record_number,    // 0
-                telemetry_received_packet.operation_mode,   // 1  
-                telemetry_received_packet.state,            // 2
-                telemetry_received_packet.acc_data.ax,      // 3
-                telemetry_received_packet.acc_data.ay,      // 4
-                telemetry_received_packet.acc_data.az,      // 5
-                telemetry_received_packet.acc_data.pitch,   // 6
-                telemetry_received_packet.acc_data.roll,    // 7
-                telemetry_received_packet.gyro_data.gx,     // 8
-                telemetry_received_packet.gyro_data.gy,     // 9
-                telemetry_received_packet.gyro_data.gz,     // 10
-                gps_packet.latitude,                        // 11
-                gps_packet.longitude,                       // 12
-                gps_packet.gps_altitude,                    // 13
-                gps_packet.time,                            // 14 - GPS time
-                altimeter_packet.pressure,                  // 15
-                altimeter_packet.temperature,               // 16
-                altimeter_packet.rel_altitude,              // 17
-                altimeter_packet.velocity,                  // 18 - velocity
-                telemetry_received_packet.drogue_pin_state, // 19
-                telemetry_received_packet.main_chute_pin_state, // 20
-                telemetry_received_packet.battery_voltage,  // 21 - battery voltage
-                telemetry_received_packet.wifi_rssi,        // 22 - RSSI from telemetry packet
-                altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
-                altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
-            );       
+        buildTelemetryCsv(telemetry_received_packet, telemetry_packet_buffer, sizeof(telemetry_packet_buffer));
         
         // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
         updateGlobalTelemetryBuffer(telemetry_packet_buffer);
+
+        // Keep local CSV debug stream visible on serial monitor.
+        Serial.print(telemetry_packet_buffer);
 
         // Logging is centralized in `logToMemory` task. This task only updates
         // the global telemetry buffer and handles terminal/beacon output.
@@ -2151,23 +2887,24 @@ void debugToTerminalTask(void* pvParameters){
         bool mqttActive = comm_manager.isMQTTActive();
         
         if (beaconActive && !mqttActive) {
-            if (is_system_armed || TEST) {
+            // FLIGHT mode: gate telemetry if sensors not healthy
+            bool sensor_health_ok = (g_spiffs_ready && g_bmp_ready && g_imu_ready && g_gps_ready && g_ads_ready);
+            bool battery_ok = (battery_voltage >= BAT_CUTOFF && battery_voltage <= BAT_MAX_VALID);
+            bool power_ok = (g_power_rail_low == 0) && (logic_rail_3v3_voltage >= 3.0f);
+            
+            if (g_test_mode || (sensor_health_ok && battery_ok && power_ok)) {
                 beacon_success = transmitter.sendBeacon(telemetry_packet_buffer, strlen(telemetry_packet_buffer));
-                if (beacon_success) {
-                    debugln("[BEACON TX] ✓ Sent: Rec#" + String(telemetry_received_packet.record_number));
-                } else {
-                    debugln("[BEACON TX] ✗ Failed to send beacon");
-                }
             } else {
-                debugln("[BEACON DEBUG] (Not armed/TEST): Rec#" + String(telemetry_received_packet.record_number));
-                beacon_success = true; // Not a failure, just not sending due to arm state
+                // In FLIGHT mode with sensor issues - suppress telemetry
+                beacon_success = false;
+                if ((millis() / 5000) % 2 == 0) {  // Log once every 10 seconds
+                    debugln("[BEACON GATE] FLIGHT mode: Telemetry blocked - sensors not ready");
+                }
             }
-        } else {
-            if (!beaconActive) {
-                Serial.println("[BEACON DISABLED] Beacon mode not active");
-            }
-            if (mqttActive) {
-                Serial.println("[BEACON BLOCKED] MQTT mode active");
+            if (beacon_success) {
+                debugln("[BEACON TX] ✓ Sent: Rec#" + String(telemetry_received_packet.record_number));
+            } else {
+                debugln("[BEACON TX] ✗ Failed to send beacon");
             }
         }
         
@@ -2253,35 +2990,7 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
     while(1) {
         xQueueReceive(telemetry_data_queue_handle, &telemetry_received_packet, portMAX_DELAY);
 
-        // Create comprehensive 25-field CSV string for MQTT transmission with Kalman filter data
-        sprintf(telemetry_packet_buffer,
-                "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f,%d,%.2f,%.2f\n",
-                telemetry_received_packet.record_number,    // 0
-                telemetry_received_packet.operation_mode,   // 1  
-                telemetry_received_packet.state,            // 2
-                telemetry_received_packet.acc_data.ax,      // 3
-                telemetry_received_packet.acc_data.ay,      // 4
-                telemetry_received_packet.acc_data.az,      // 5
-                telemetry_received_packet.acc_data.pitch,   // 6
-                telemetry_received_packet.acc_data.roll,    // 7
-                telemetry_received_packet.gyro_data.gx,     // 8
-                telemetry_received_packet.gyro_data.gy,     // 9
-                telemetry_received_packet.gyro_data.gz,     // 10
-                gps_packet.latitude,                        // 11
-                gps_packet.longitude,                       // 12
-                gps_packet.gps_altitude,                    // 13
-                gps_packet.time,                            // 14 - GPS time
-                altimeter_packet.pressure,                  // 15
-                altimeter_packet.temperature,               // 16
-                altimeter_packet.rel_altitude,              // 17
-                altimeter_packet.velocity,                  // 18 - velocity
-                telemetry_received_packet.drogue_pin_state, // 19
-                telemetry_received_packet.main_chute_pin_state, // 20
-                telemetry_received_packet.battery_voltage,  // 21 - battery voltage
-                telemetry_received_packet.wifi_rssi,        // 22 - RSSI from telemetry packet
-                altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
-                altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
-                );
+        buildTelemetryCsv(telemetry_received_packet, telemetry_packet_buffer, sizeof(telemetry_packet_buffer));
         // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
         updateGlobalTelemetryBuffer(telemetry_packet_buffer);
         // Persisting to SD/Flash is handled by the centralized `logToMemory` task.
@@ -2301,18 +3010,26 @@ void MQTT_TransmitTelemetry(void* pvParameters) {
                 debugln("[MQTT TX] WiFi not connected - transmission failed");
                 mqtt_success = false;
             }
-            // Only send data if armed OR if in test mode
-            else if (is_system_armed || TEST) {
-                if (client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer)) {
-                    debugln("[MQTT TX] " + String(telemetry_packet_buffer));
-                    mqtt_success = true;
+            // In FLIGHT mode gate: skip telemetry if sensors are unhealthy.
+            else {
+                bool sensor_ok = g_spiffs_ready && g_bmp_ready && g_imu_ready && g_gps_ready && g_ads_ready;
+                bool battery_ok = (battery_voltage >= BAT_CUTOFF && battery_voltage <= BAT_MAX_VALID);
+                bool power_ok = (g_power_rail_low == 0) && (logic_rail_3v3_voltage >= 3.0f);
+
+                if (g_test_mode || (sensor_ok && battery_ok && power_ok)) {
+                    if (client.publish(MQTT_TELEMETRY_TOPIC, telemetry_packet_buffer)) {
+                        debugln("[MQTT TX] " + String(telemetry_packet_buffer));
+                        mqtt_success = true;
+                    } else {
+                        debugln("[MQTT TX] Failed to publish data");
+                        mqtt_success = false;
+                    }
                 } else {
-                    debugln("[MQTT TX] Failed to publish data");
                     mqtt_success = false;
+                    if ((millis() / 5000) % 2 == 0) {
+                        debugln("[MQTT GATE] FLIGHT mode: Telemetry blocked - sensors not ready");
+                    }
                 }
-            } else {
-                debugln("[MQTT DEBUG] " + String(telemetry_packet_buffer));
-                mqtt_success = true; // Not a failure, just not sending due to arm state
             }
         }
         // Update communication manager with MQTT transmission status
@@ -2335,35 +3052,7 @@ void XBee_TransmitTelemetry(void* pvParameters) {
     while(1) {
         xQueueReceive(telemetry_data_queue_handle, &telemetry_received_packet, portMAX_DELAY);
 
-        // Create comprehensive 25-field CSV string (same format as MQTT)
-        sprintf(telemetry_packet_buffer,
-                "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%.2f,%d,%.2f,%.2f\n",
-                telemetry_received_packet.record_number,    // 0
-                telemetry_received_packet.operation_mode,   // 1  
-                telemetry_received_packet.state,            // 2
-                telemetry_received_packet.acc_data.ax,      // 3
-                telemetry_received_packet.acc_data.ay,      // 4
-                telemetry_received_packet.acc_data.az,      // 5
-                telemetry_received_packet.acc_data.pitch,   // 6
-                telemetry_received_packet.acc_data.roll,    // 7
-                telemetry_received_packet.gyro_data.gx,     // 8
-                telemetry_received_packet.gyro_data.gy,     // 9
-                telemetry_received_packet.gyro_data.gz,     // 10
-                gps_packet.latitude,                        // 11
-                gps_packet.longitude,                       // 12
-                gps_packet.gps_altitude,                    // 13
-                gps_packet.time,                            // 14 - GPS time
-                altimeter_packet.pressure,                  // 15
-                altimeter_packet.temperature,               // 16
-                altimeter_packet.rel_altitude,              // 17
-                altimeter_packet.velocity,                  // 18 - velocity
-                telemetry_received_packet.drogue_pin_state, // 19
-                telemetry_received_packet.main_chute_pin_state, // 20
-                telemetry_received_packet.battery_voltage,  // 21 - battery voltage
-                telemetry_received_packet.wifi_rssi,        // 22 - RSSI (0 for XBee mode)
-                altimeter_packet.kalman_altitude,           // 23 - 2D Kalman filtered altitude
-                altimeter_packet.kalman_vertical_velocity   // 24 - 2D Kalman filtered vertical velocity
-                );
+        buildTelemetryCsv(telemetry_received_packet, telemetry_packet_buffer, sizeof(telemetry_packet_buffer));
         
         // 🔥 UPDATE GLOBAL TELEMETRY BUFFER for seamless mode switching
         updateGlobalTelemetryBuffer(telemetry_packet_buffer);
@@ -2371,18 +3060,21 @@ void XBee_TransmitTelemetry(void* pvParameters) {
         // 🔥 ISOLATED XBEE TRANSMISSION - Only transmit via XBee when XBee mode is active
         bool xbee_success = false;
         if (comm_manager.isXBeeActive()) {
-            // Only send data if armed OR if in test mode
-            if (is_system_armed || TEST) {
-                // XBee transparent mode: Just send the CSV string with println
+            // In FLIGHT mode gate: skip telemetry if sensors are unhealthy.
+            bool sensor_ok = g_spiffs_ready && g_bmp_ready && g_imu_ready && g_gps_ready && g_ads_ready;
+            bool battery_ok = (battery_voltage >= BAT_CUTOFF && battery_voltage <= BAT_MAX_VALID);
+            bool power_ok = (g_power_rail_low == 0) && (logic_rail_3v3_voltage >= 3.0f);
+
+            if (g_test_mode || (sensor_ok && battery_ok && power_ok)) {
                 XBeeSerial.println(telemetry_packet_buffer);
                 Serial.println("[XBEE TX] ✓ Sent: Rec#" + String(telemetry_received_packet.record_number));
                 xbee_success = true;
             } else {
-                Serial.println("[XBEE BLOCKED] System not armed and TEST mode disabled");
-                xbee_success = true; // Not a failure, just not sending due to arm state
+                xbee_success = false;
+                if ((millis() / 5000) % 2 == 0) {
+                    Serial.println("[XBEE GATE] FLIGHT mode: Telemetry blocked - sensors not ready");
+                }
             }
-        } else {
-            Serial.println("[XBEE DISABLED] XBee mode not active");
         }
         
         // Update communication manager with XBee transmission status
@@ -2434,7 +3126,6 @@ void MQTTInit(const char* broker_IP, int broker_port) {
     client.setServer(broker_IP, broker_port);
     client.setCallback(mqtt_Callback);
     debugln("MQTT callback hooked!");
-    delay(1000);
     debugln("[+]MQTT init OK");
 }
 
@@ -2442,21 +3133,76 @@ void MQTTInit(const char* broker_IP, int broker_port) {
  * @brief blinks green LED for safe mode and red LED for armed mode
  *******************************************************************************/
 void xOperationModeIndicateTask(void* pvParameters) {
-    while(1)
-    {
-        if (operation_mode) {
-            /* armed */
-            digitalWrite(RED_LED_PIN, HIGH);
-            vTaskDelay(BLINK_INTERVALS::ARMED_BLINK);
-            digitalWrite(RED_LED_PIN, LOW);
-            vTaskDelay(BLINK_INTERVALS::ARMED_BLINK);
-        } else if(!operation_mode) {
-            /* safe */
-            digitalWrite(GREEN_LED_PIN, HIGH);
-            vTaskDelay(BLINK_INTERVALS::SAFE_BLINK);
+    static bool startup_pattern_queued = false;
+    static uint8_t active_pattern = BUZZER_PATTERN_NONE;
+    static uint32_t pattern_start_ms = 0;
+    static bool led_state = false;
+    static uint32_t last_led_toggle_ms = 0;
+
+    if (!startup_pattern_queued) {
+        requestBuzzerPattern(g_test_mode ? BUZZER_PATTERN_STARTUP_TEST : BUZZER_PATTERN_STARTUP_FLIGHT);
+        startup_pattern_queued = true;
+    }
+
+    while(1) {
+        uint32_t now = millis();
+
+        if (g_preflight_alarm_active) {
+            // 3 beeps every 2 seconds, LED in sync.
+            uint32_t phase = now % 2000;
+            bool alarm_on = (phase < 150) || (phase >= 300 && phase < 450) || (phase >= 600 && phase < 750);
+
+            digitalWrite(BUZZER_PIN, alarm_on ? HIGH : LOW);
+            digitalWrite(RED_LED_PIN, alarm_on ? HIGH : LOW);
             digitalWrite(GREEN_LED_PIN, LOW);
-            vTaskDelay(BLINK_INTERVALS::SAFE_BLINK);
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
         }
+
+        if (active_pattern == BUZZER_PATTERN_NONE && g_buzzer_pattern_request != BUZZER_PATTERN_NONE) {
+            active_pattern = g_buzzer_pattern_request;
+            g_buzzer_pattern_request = BUZZER_PATTERN_NONE;
+            pattern_start_ms = now;
+        }
+
+        bool buzzer_on = false;
+        if (active_pattern != BUZZER_PATTERN_NONE) {
+            uint32_t pattern_elapsed = now - pattern_start_ms;
+            switch (active_pattern) {
+                case BUZZER_PATTERN_SHORT_ACK:
+                    buzzer_on = (pattern_elapsed < 120);
+                    if (pattern_elapsed >= 160) active_pattern = BUZZER_PATTERN_NONE;
+                    break;
+                case BUZZER_PATTERN_STARTUP_TEST:
+                    buzzer_on = (pattern_elapsed < 100) || (pattern_elapsed >= 220 && pattern_elapsed < 320);
+                    if (pattern_elapsed >= 380) active_pattern = BUZZER_PATTERN_NONE;
+                    break;
+                case BUZZER_PATTERN_STARTUP_FLIGHT:
+                    buzzer_on = (pattern_elapsed < 320);
+                    if (pattern_elapsed >= 380) active_pattern = BUZZER_PATTERN_NONE;
+                    break;
+                default:
+                    active_pattern = BUZZER_PATTERN_NONE;
+                    break;
+            }
+        }
+        digitalWrite(BUZZER_PIN, buzzer_on ? HIGH : LOW);
+
+        uint32_t blink_interval = operation_mode ? BLINK_INTERVALS::ARMED_BLINK : BLINK_INTERVALS::SAFE_BLINK;
+        if ((now - last_led_toggle_ms) >= blink_interval) {
+            led_state = !led_state;
+            last_led_toggle_ms = now;
+        }
+
+        if (operation_mode) {
+            digitalWrite(RED_LED_PIN, led_state ? HIGH : LOW);
+            digitalWrite(GREEN_LED_PIN, LOW);
+        } else {
+            digitalWrite(GREEN_LED_PIN, led_state ? HIGH : LOW);
+            digitalWrite(RED_LED_PIN, LOW);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -2502,6 +3248,20 @@ void xCreateAllTasks() {
     
     uint8_t tasks_created = 0;
     uint8_t tasks_failed = 0;
+
+    /* 🛡️ DMP FIFO POLLING TASK - with memory protection */
+    if (imu.isDMPReady()) {
+        BaseType_t dmp_task = xTaskCreatePinnedToCore(dmpFIFOPollingTask, "dmpFIFOPoller", STACK_SIZE*2, NULL, 1, &dmpFIFOPollingTaskHandle, 1);
+        if(dmp_task == pdPASS) {
+            tasks_created++;
+            debugln("[+]DMP FIFO polling task created OK.");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]DMP FIFO polling task created OK.\r\n");
+        } else {
+            tasks_failed++;
+            debugln("[-]DMP FIFO polling task creation failed - falling back to legacy mode");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]DMP FIFO task creation failed\r\n");
+        }
+    }
 
     /* 🛡️ READ ACCELERATION DATA - with memory protection */
     BaseType_t gr = xTaskCreatePinnedToCore(readAccelerationTask, "readAccelerometer", STACK_SIZE*4, NULL, 2, &readAccelerationTaskHandle, 1);
@@ -2564,16 +3324,33 @@ void xCreateAllTasks() {
     }
     
     /* 🛡️ BATTERY MONITOR TASK - essential for battery health monitoring via ADS1115 */
-    BaseType_t bm = xTaskCreatePinnedToCore(batteryMonitorTask, "batteryMonitor", STACK_SIZE, NULL, 2, &batteryMonitorTaskHandle, 1);
-    if(bm == pdPASS) {
+    if (ads_monitor_ready) {
+        BaseType_t bm = xTaskCreatePinnedToCore(batteryMonitorTask, "batteryMonitor", STACK_SIZE, NULL, 2, &batteryMonitorTaskHandle, 1);
+        if(bm == pdPASS) {
+            tasks_created++;
+            debugln("[+]batteryMonitorTask created OK.");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]batteryMonitorTask created OK.\r\n");
+        } else {
+            tasks_failed++;
+            debugln("[-]Failed to create batteryMonitorTask");
+            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]Failed to create batteryMonitorTask\r\n");
+        }
+    } else {
+        debugln("[!] batteryMonitorTask skipped (ADS1115 unavailable)");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "batteryMonitorTask skipped - ADS1115 unavailable\r\n");
+    }
+
+    /* 🛡️ PREFLIGHT HEALTH TASK - monitors sensors/battery and enforces FLIGHT mode gate */
+    BaseType_t pf = xTaskCreatePinnedToCore(preflightHealthTask, "preflightHealth", STACK_SIZE*2, NULL, 2, &preflightHealthTaskHandle, 1);
+    if (pf == pdPASS) {
         tasks_created++;
-        debugln("[+]batteryMonitorTask created OK.");
-        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]batteryMonitorTask created OK.\r\n");
+        debugln("[+]preflightHealth task created OK.");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]preflightHealth task created OK.\r\n");
     } else {
         tasks_failed++;
-        debugln("[-]Failed to create batteryMonitorTask");
-        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]Failed to create batteryMonitorTask\r\n");
-    } 
+        debugln("[-]Failed to create preflightHealth task - CRITICAL");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, system_log_file, "[CRITICAL]Failed to create preflightHealth task\r\n");
+    }
 
     /* 🛡️ TRANSMIT TELEMETRY DATA - communication essential (only if MQTT enabled) */
     #if BEACON_MODE_SAFETY_CHECKS
@@ -2596,23 +3373,31 @@ void xCreateAllTasks() {
     }
     #endif
 
-    /* 🛡️ XBEE TRANSMIT TELEMETRY - controlled by comm_manager (only if XBEE enabled) */
-    #if XBEE
-    Serial.println("[XBEE TASK] Attempting to create XBee task...");
+    /* 🛡️ XBEE TASKS - always created, runtime behavior controlled by comm_manager */
+    Serial.println("[XBEE TASK] Attempting to create XBee telemetry task...");
     BaseType_t xb = xTaskCreatePinnedToCore(XBee_TransmitTelemetry, "xbee_telemetry", STACK_SIZE*4, NULL, 2, &XBee_TransmitTelemetryTaskHandle, 1);
     if(xb == pdPASS){
         tasks_created++;
         debugln("[+]XBee transmit task created OK");
-        Serial.printf("[XBEE TASK] Task created successfully! use_xbee_mode=%d\n", use_xbee_mode);
+        Serial.printf("[XBEE TASK] Telemetry task created. use_xbee_mode=%d\n", use_xbee_mode);
         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]XBee transmit task created OK\r\n");
     } else {
         tasks_failed++;
         debugln("[-]XBee transmit task failed to create");
         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]XBee transmit task failed to create\r\n");
     }
-    #else
-    debugln("[+] XBee transmit task skipped - XBEE=0 in defs.h");
-    #endif
+
+    Serial.println("[XBEE CMD] Attempting to create XBee command task...");
+    BaseType_t xbcmd = xTaskCreatePinnedToCore(xbeeCommandTask, "xbee_command", STACK_SIZE*3, NULL, 3, NULL, 1);
+    if(xbcmd == pdPASS) {
+        tasks_created++;
+        debugln("[+]XBee command task created OK");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]XBee command task created OK\r\n");
+    } else {
+        tasks_failed++;
+        debugln("[-]XBee command task failed to create");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]XBee command task failed to create\r\n");
+    }
 
     /* 🛡️ KALMAN FILTER 2D TASK - essential for altitude estimation */
     BaseType_t kf2d = xTaskCreatePinnedToCore(taskKalman2D, "Kalman2D", STACK_SIZE*4, NULL, 2, NULL, 1);
@@ -2733,6 +3518,13 @@ void xCreateAllTasks() {
 void setup() {
     /* initialize serial */
     Serial.begin(BAUDRATE);
+    g_boot_time_ms = millis();
+
+    // Initialize I2C mutex before any bus activity.
+    i2c_mutex = xSemaphoreCreateMutex();
+    if (i2c_mutex == NULL) {
+        Serial.println("[I2C] Failed to create I2C mutex - continuing without bus locking");
+    }
     
     // Initialize XBee UART (always initialize, controlled by comm_manager)
     XBeeSerial.begin(XBEE_BAUD_RATE, SERIAL_8N1, XBEE_RX_PIN, XBEE_TX_PIN);
@@ -2746,7 +3538,6 @@ void setup() {
         // Send test message to verify XBee connection
         XBeeSerial.println("XBEE_TEST_STARTUP");
         Serial.println("[XBEE TEST] Sent startup test message");
-        delay(100);
         
         // Flush TX buffer to ensure data is sent
         XBeeSerial.flush();
@@ -2775,16 +3566,26 @@ void setup() {
     digitalWrite(RED_LED_PIN, LOW);
     buzzerInit();
 
+    // Standard preflight baseline: ensure all pyro outputs start in safe OFF state.
+    pinMode(DROGUE_PIN, OUTPUT);
+    pinMode(MAIN_CHUTE_EJECT_PIN, OUTPUT);
+    pinMode(REMOTE_SWITCH, OUTPUT);
+    digitalWrite(DROGUE_PIN, LOW);
+    digitalWrite(MAIN_CHUTE_EJECT_PIN, LOW);
+    digitalWrite(REMOTE_SWITCH, LOW);
+
+    // Determine TEST/FLIGHT mode from defs.h with optional grounded pin override.
+    checkRunTestToggle();
+
     // Initialize operation mode to SAFE_MODE by default
     operation_mode = OPERATION_MODE::SAFE_MODE;
-    /* buzz to indicate start of setup */
-    blocking_buzz(BUZZ_INTERVALS::SETUP_INIT);
 
     /* core to run the tasks */
     uint8_t app_core_id = xPortGetCoreID();
 
     // SPIFFS Must be initialized first to allow event logging from the word go
     uint8_t spiffs_init_state = InitSPIFFS();
+    g_spiffs_ready = (spiffs_init_state != 0);
 
     // SYSTEM LOG FILE
     SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::WRITE, "FC1", LOG_LEVEL::INFO, system_log_file, "Flight computer Event log\r\n");
@@ -2859,43 +3660,37 @@ void setup() {
     
     debugln("[DEBUG] Starting BMP initialization...");
     uint8_t bmp_init_state = BMPInit();
+    g_bmp_ready = (bmp_init_state != 0);
     debugln("[DEBUG] Starting IMU initialization...");
     uint8_t imu_init_state = imu.init();
-    debugln("[DEBUG] Starting GPS initialization...");
-    uint8_t gps_init_state = GPSInit();
+    g_imu_ready = (imu_init_state != 0);
     
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Initialize ADS1115 for battery and pyro line voltage monitoring
-    // ═══════════════════════════════════════════════════════════════════════════
-    debugln("[DEBUG] Starting ADS1115 initialization...");
-    Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
-    
-    if (!ads.begin(ADS_ADDR)) {
-        debugln("[-] ADS1115 not found on I2C - battery/pyro monitoring unavailable");
-        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
-                                system_log_file, "ADS1115 init failed - check I2C wiring\r\n");
+    // 🔥 Initialize DMP (Digital Motion Processor) for stable quaternion-based angles
+    debugln("[DEBUG] Starting DMP initialization...");
+    uint8_t dmp_init_state = imu.initDMP();
+    if (dmp_init_state == 0) {
+        debugln("[+] DMP initialized successfully - using quaternion-derived angles");
     } else {
-        ads.setGain(GAIN_ONE);                  // ±4.096 V, 0.125 mV/LSB
-        ads.setDataRate(RATE_ADS1115_128SPS);   // 128 samples/sec
-        debugln("[+] ADS1115 initialized: I2C 0x48, GAIN_ONE, 128 SPS");
-        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, 
-                                system_log_file, "[+] ADS1115 initialized OK\r\n");
-        
-        // Quick self-test: read battery voltage
-        float initial_battery_v = readADSVoltage(ADC_CH_BATTERY, 4);
-        debug("    Battery voltage at startup: "); debug(String(initial_battery_v, 2)); debugln(" V");
-        
-        if (initial_battery_v < 1.0f) {
-            debugln("    [WARN] Battery voltage reading suspiciously low - check voltage divider");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, 
-                                    system_log_file, "ADS1115 battery reading low - check divider\r\n");
-        } else if (initial_battery_v < BAT_CUTOFF) {
-            debugln("    [WARN] Battery below cutoff voltage - charge before flight!");
-            SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, 
-                                    system_log_file, "Battery critically low at startup\r\n");
-        }
+        debugln("[-] DMP initialization failed - falling back to direct angle calculations");
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
+                                system_log_file, "[-] DMP init failed - using legacy angle mode.\r\n");
     }
     
+    debugln("[DEBUG] Starting GPS initialization...");
+    uint8_t gps_init_state = GPSInit();
+    g_gps_ready = (gps_init_state != 0);
+    
+    debugln("[DEBUG] Starting ADS1115 initialization...");
+    uint8_t ads_init_state = ADSInit();
+    g_ads_ready = (ads_init_state != 0);
+    if (ads_init_state) {
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                                system_log_file, "[+] ADS1115 init OK.\r\n");
+    } else {
+        SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING,
+                                system_log_file, "[-] ADS1115 init failed - using fallback battery voltage.\r\n");
+    }
+
     debugln("[DEBUG] Disabling all devices...");
     disableAllDevices();
     debugln("[DEBUG] Starting SD initialization...");
@@ -2910,6 +3705,7 @@ void setup() {
     debugln("[DEBUG] Flash logging disabled - skipping flash logger initialization");
     uint8_t flash_init_state = 1; // Set to success since we're not using it
     #endif
+
     debugln(F("=============================================="));
     Serial.print("Available heap: ");
     debugln(F("=============================================="));
@@ -2971,12 +3767,9 @@ void setup() {
     //Initialize Kalman Matrices 
     init_kalman_matrices();
 
-    /* check whether we are in TEST or RUN mode */
-    checkRunTestToggle();
-
     // TODO: if toggle pin in RUN mode, set to wait for arming 
-
-    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "RUN MODE\r\n");
+    SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO,
+                            system_log_file, g_test_mode ? "TEST MODE\r\n" : "FLIGHT MODE\r\n");
     
     debugln();
     debugln(F("=============================================="));
@@ -3126,7 +3919,96 @@ void loop() {
     esp_task_wdt_reset();
     
     /* Add a small delay to prevent watchdog timeout */
-    delay(10);
+    vTaskDelay(pdMS_TO_TICKS(10));
     
 /* End of main loop*/
+}
+
+void xbeeCommandTask(void* pvParameters) {
+    String line;
+
+    while (1) {
+        while (XBeeSerial.available() > 0) {
+            char c = (char)XBeeSerial.read();
+            if (c == '\n' || c == '\r') {
+                if (line.length() > 0) {
+                    String command = line;
+                    command.trim();
+                    String command_upper = command;
+                    command_upper.toUpperCase();
+
+                    if (command.length() > 0) {
+                        // Mode commands are always accepted so links can be recovered.
+                        if (command_upper.startsWith("CMD_MQTT_MODE") ||
+                            command_upper.startsWith("CMD_BEACON_MODE") ||
+                            command_upper.startsWith("CMD_XBEE_MODE") ||
+                            command_upper.startsWith("CMD_AUTO_FALLBACK") ||
+                            command_upper.startsWith("CMD_GET_MODE")) {
+                            comm_manager.handleModeCommand(command_upper, "XBEE");
+                        }
+                        // Ignore likely telemetry/CSV lines on command channel.
+                        else if (command.indexOf(',') >= 0) {
+                            // no-op
+                        }
+                        // In XBee mode, process non-mode commands over XBee.
+                        else if (comm_manager.isXBeeActive()) {
+                            if (command_upper == "ARM" || command_upper == "CMD_ARM") {
+                                if (!g_test_mode && (!g_preflight_checks_complete || g_preflight_block_flight)) {
+                                    debugln("⛔ ARM rejected via XBee: preflight checks not satisfied (FLIGHT mode)");
+                                } else {
+                                    arm_pyros();
+                                    chutesInit();
+                                    if (use_beacon_mode) transmitter.setArmed(true);
+                                    is_system_armed = true;
+                                    operation_mode = OPERATION_MODE::ARMED_MODE;
+                                    requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
+                                    debugln("🚀 ARMED via XBee");
+                                }
+                            } else if (command_upper == "DISARM" || command_upper == "CMD_DISARM") {
+                                disarm_pyros();
+                                if (use_beacon_mode) transmitter.setArmed(false);
+                                is_system_armed = false;
+                                operation_mode = OPERATION_MODE::SAFE_MODE;
+                                requestBuzzerPattern(BUZZER_PATTERN_SHORT_ACK);
+                                debugln("🛑 DISARMED via XBee");
+                            } else if (command_upper == "RESET" || command_upper == "CMD_RESET") {
+                                debugln("🔄 RESET via XBee");
+                                vTaskDelay(pdMS_TO_TICKS(100));
+                                ESP.restart();
+                            } else if (command_upper == "DROGUE_ON") {
+                                armDroguePyro();
+                                debugln("🪂 DROGUE CHUTE ARMED via XBee");
+                            } else if (command_upper == "DROGUE_OFF") {
+                                disarmDroguePyro();
+                                debugln("🪂 DROGUE CHUTE DISARMED via XBee");
+                            } else if (command_upper == "MAIN_ON") {
+                                armMainPyro();
+                                debugln("🪂 MAIN CHUTE ARMED via XBee");
+                            } else if (command_upper == "MAIN_OFF") {
+                                disarmMainPyro();
+                                debugln("🪂 MAIN CHUTE DISARMED via XBee");
+                            } else if (command_upper.startsWith("CMD_SET_PWM_CONFIG:")) {
+                                int payloadIndex = command.indexOf(':');
+                                const char* jsonPayload = (payloadIndex >= 0) ? command.substring(payloadIndex + 1).c_str() : "";
+                                PWMConfig newConfig;
+                                if (parsePWMConfig(jsonPayload, newConfig)) {
+                                    applyPWMConfig(newConfig);
+                                } else {
+                                    debugln("❌ Invalid PWM config JSON via XBee");
+                                }
+                            }
+                        }
+                    }
+                }
+                line = "";
+            } else {
+                line += c;
+                if (line.length() > 200) {
+                    line = "";
+                }
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }

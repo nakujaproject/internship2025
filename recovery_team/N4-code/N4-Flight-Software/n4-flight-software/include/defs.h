@@ -13,7 +13,7 @@
 /*!< at the same time */
 #define MQTT 0                                 /*!< Default to MQTT mode - can be overridden dynamically */
 #define TEST 1                                /*!< set to 1 to enable test mode - allows data transmission even when disarmed */
-#define XBEE 1                               /*!< set to 1 if using XBEE for telemetry transfer - can be overridden dynamically */
+#define XBEE 1                              /*!< set to 1 if using XBEE for telemetry transfer - can be overridden dynamically */
 
 // 🔥 DYNAMIC COMMUNICATION MODE CONTROL (MQTT / BEACON / XBEE)
 extern bool use_mqtt_mode;                       /*!< Enable MQTT transmission */
@@ -78,7 +78,7 @@ extern communication_status_t comm_status;
 #endif
 // Simulation toggle: 1 = use internal simulated flight profile & GPS, 0 = use real sensors
 #ifndef USE_SIMULATION
-#define USE_SIMULATION 1
+#define USE_SIMULATION 0
 #endif
 
 #if DEBUGGING
@@ -173,13 +173,17 @@ namespace OPERATION_MODE {
 #ifndef MAC_ADDRESS_VALUES_DEFINED
 #define MAC_ADDRESS_VALUES_DEFINED
 // Primary FC- Glenn FC
-// static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC (placeholder)
-// static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC (placeholder)
+// static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC 
+// static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC 
 
 // Secondary fc - Cephas FC
-static const uint8_t ROCKET_MAC[6] = {0x14, 0x08, 0x08, 0xAC, 0x8B, 0xF4}; // Flight computer ESP32 MAC (placeholder)
-static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC (placeholder)
+static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC 
+static const uint8_t BASE_MAC[6]   = {0x14, 0x08, 0x08, 0xac ,0x82, 0xf8}; // Ground station / peer MAC 
 
+//static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC 
+
+// {0x14, 0x08, 0x08, 0xac ,0x82, 0xf8}
+//08:d1:f9:15:9c:04
 #endif
 
 // Externs for communication manager to restore WiFi/MQTT

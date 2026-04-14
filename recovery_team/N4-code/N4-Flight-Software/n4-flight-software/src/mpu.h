@@ -6,7 +6,10 @@
 #include <Wire.h>
 #include <math.h>
 #include "defs.h"
-
+// Prevent I2Cdevlib typedef collisions with the local MPU6050 wrapper.
+#define I2CDEVLIB_MPU6050_TYPEDEF
+#include "I2Cdev.h"
+#include "MPU6050_6Axis_MotionApps20.h"
 
 // divisor factors based on full scale ranges
 #define ACCEL_FACTOR_2G       16384      
@@ -49,13 +52,37 @@
 #define ONE_G                   9.80665
 #define TO_DEG_FACTOR           57.32
 
+// DMP FIFO packet structure
+struct DMPPacket {
+    float yaw;      // Z angle (degrees)
+    float pitch;    // Y angle (degrees)
+    float roll;     // X angle (degrees)
+    float gx;       // X angular velocity (deg/s)
+    float gy;       // Y angular velocity (deg/s)
+    float gz;       // Z angular velocity (deg/s)
+};
+
 class MPU6050 {
     private:
         uint8_t _address;
         uint32_t _accel_fs_range;
         uint32_t _gyro_fs_range;
+        
+        // DMP-specific members
+        MPU6050_6Axis_MotionApps20 mpu_dmp;
+        bool dmp_ready;
+        bool dmp_packet_valid;
+        uint16_t packet_size;
+        uint32_t last_dmp_update_ms;
+        uint8_t fifo_buffer[64];
+        Quaternion q;
+        VectorFloat gravity;
+        float ypr[3];  // [0]=yaw, [1]=pitch, [2]=roll
 
     public:
+        // Compatibility alias so callers can use MPU6050::DMPPacket
+        typedef ::DMPPacket DMPPacket;
+
         // sensor data
         int16_t acc_x, acc_y, acc_z; // raw acceleration values
         float acc_x_real, acc_y_real, acc_z_real; // converted acceleration values
@@ -66,10 +93,14 @@ class MPU6050 {
 
         float pitch_angle, roll_angle;
         float acc_x_ms, acc_y_ms, acc_z_ms; // acceleration in m/s^2
-
+        
+        // DMP packet cache
+        DMPPacket dmp_data;
 
         MPU6050(uint8_t address, uint32_t accel_fs_range, uint32_t gyro_fs_range);
         uint8_t init();
+        
+        // Legacy methods (direct register reads)
         float readXAcceleration();
         float readYAcceleration();
         float readZAcceleration();
@@ -80,6 +111,15 @@ class MPU6050 {
         void filterImu();
         float getRoll();
         float getPitch();
+        
+        // DMP methods
+        uint8_t initDMP();
+        bool pollFIFO(DMPPacket& packet);
+        bool isDMPReady() { return dmp_ready; }
+        bool hasDMPPacket() const { return dmp_packet_valid; }
+        bool hasFreshDMPPacket(uint32_t maxAgeMs) const;
+        void setDMPEnabled(bool enable) { if (dmp_ready) mpu_dmp.setDMPEnabled(enable); }
+        void calibrateSensors();
 };
 
 #endif
