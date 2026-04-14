@@ -161,13 +161,22 @@ def start_basestation():
         # 5) Python telemetry server runs in main process
         print("▶ Starting integrated telemetry server...")
         
-        # Import and run the integrated server
+        # Import and run the integrated server.
+        # Preferred module path is research/scripts/server.py.
         import threading
-        from research.server import (
-            setup_csv_logging, setup_mqtt_connection, start_usb_monitor,
-            open_serial, start_simulation, main_loop, command_interface,
-            SIMULATION_MODE
-        )
+        try:
+            from research.scripts.server import (
+                setup_csv_logging, setup_mqtt_connection, start_usb_monitor,
+                open_serial, start_simulation, main_loop, command_interface,
+                SIMULATION_MODE,
+            )
+        except ModuleNotFoundError:
+            # Backward-compat fallback for older layouts.
+            from research.server import (
+                setup_csv_logging, setup_mqtt_connection, start_usb_monitor,
+                open_serial, start_simulation, main_loop, command_interface,
+                SIMULATION_MODE,
+            )
         
         # Setup CSV logging
         setup_csv_logging()
