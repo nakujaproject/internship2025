@@ -178,7 +178,7 @@ namespace OPERATION_MODE {
 
 // Secondary fc - Cephas FC
 static const uint8_t ROCKET_MAC[6] = {0x08, 0xD1, 0xF9, 0x15, 0x9C, 0x04}; // Flight computer ESP32 MAC 
-static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC - Updated
+static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x01c, 0xa6 ,0x11, 0xf0}; // Ground station / peer MAC - Updated
 
 //static const uint8_t BASE_MAC[6]   = {0x10, 0x06, 0x1c, 0xa6, 0x11, 0xf0}; // Ground station / peer MAC 
 
@@ -231,7 +231,6 @@ const char MQTT_ARMING_TOPIC[30] = "n4/commands";             /* make this topic
 #define PREFLIGHT_BIT 0
 #define POWERED_FLIGHT_BIT 1
 #define APOGEE_BIT 2
-
 #define STATE_CHANGE_DELAY 20
 #endif 
 
