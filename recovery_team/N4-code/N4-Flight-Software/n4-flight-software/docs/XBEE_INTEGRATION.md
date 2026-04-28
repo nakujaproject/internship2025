@@ -2,12 +2,11 @@
 
 ## Overview
 
-The N4 flight computer now supports **4 communication modes** with intelligent switching:
+The N4 flight computer now supports **3 communication modes** with intelligent switching:
 
 1. **MQTT Mode**: WiFi STA + MQTT broker
 2. **Beacon Mode**: Raw 802.11 beacons + ESP-NOW commands
 3. **XBee Mode**: Direct UART CSV transmission (transparent mode)
-4. **Triple Mode**: All three simultaneously
 
 ## XBee Configuration
 
