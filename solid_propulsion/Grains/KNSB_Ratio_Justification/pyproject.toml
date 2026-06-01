@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "KNSB_Ratio_Justification"
+version = "0.1.0"
+description = "This project provides a detailed justification for the KNSB ratio used in thermometric measurements, including theoretical background, derivations, and practical applications."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Brian Ikiara", email = "brnikiara@gmail.com" }
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved",
+  "License :: OSI Approved :: Academic Free License (AFL)",
+  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
+  "Natural Language :: English",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Topic :: Scientific/Engineering :: Physics",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "ipykernel",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "pypropep",
+    "sympy",
+    "Fraction",
+    "gradio"
+]
+
+[project.urls]
+Homepage = "https://nakujaproject.com"
+MyHomepage = "https://azid0azide.github.io/projects/knsb_ratio_justification.html"
+Documentation = "https://github.com/nakujaproject/internship2025/blob/main/solid_propulsion/Grains/KNSB_Ratio_Justification/README.md"
+Repository = "https://github.com/nakujaproject/internship2025.git"
+Issues = "https://github.com/nakujaproject/internship2025/issues"
+Changelog = "https://github.com/nakujaproject/internship2025/blob/main/CHANGELOG.md"
+
+[tool.notebooks]
+stoichiometric_justification = "stoichiometric_justification.ipynb"
+thermochemical_justification = "thermochemical_justification.ipynb"

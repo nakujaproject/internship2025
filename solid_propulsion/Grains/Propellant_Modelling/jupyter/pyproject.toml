@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "Propellant Modeling"
+version = "0.1.0"
+description = "This project..."
+requires-python = ">=3.11"
+readme = "README.md"
+license = "LICENSE"
+authors = [
+    { name = "Brian Ikiara", email = "brnikiara@gmail.com" }
+]
+dynamic = ["dependencies", "version"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Researchers",
+  "Topic :: Documentation :: Rocketry :: Propulsion Systems :: Ballistics Research",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "ipykernel",
+    "numpy",
+    "pandas",
+    "matplotlib",
+    "scipy",
+    "sympy",
+    "psi4",
+    "vmd"
+]
+
+[project.urls]
+Homepage = "https://nakujaproject.com"
+MyHomepage = "https://azid0azide.github.io/projects/propellant_modelling.html"
+Documentation = "https://github.com/nakujaproject/internship2025/blob/main/solid_propulsion/Grains/Propellant_Modelling/README.md"
+Repository = "https://github.com/nakujaproject/internship2025.git"
+Issues = "https://github.com/nakujaproject/internship2025/issues"
+Changelog = "https://github.com/nakujaproject/internship2025/blob/main/CHANGELOG.md"
+

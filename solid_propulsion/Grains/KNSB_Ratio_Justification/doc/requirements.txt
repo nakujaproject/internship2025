@@ -1,8 +1,0 @@
-ipykernel
-numpy
-pandas
-matplotlib
-scipy
-pypropep
-sympy
-Fraction

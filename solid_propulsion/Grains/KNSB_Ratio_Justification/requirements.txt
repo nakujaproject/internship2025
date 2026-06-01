@@ -1,0 +1,10 @@
+ipykernel 
+numpy 
+pandas 
+matplotlib
+scipy
+pypropep
+sympy 
+gradio
+Fraction
+poetry==2.4.0
