@@ -1,3 +1,4 @@
+import os
 import serial
 from flask import Flask, jsonify
 from flask_cors import CORS
@@ -106,4 +107,6 @@ def reconnect():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(host='localhost', port=5000, debug=True)
+    port = int(os.environ.get('FLASK_PORT', 5001))
+    debug = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
+    app.run(host='0.0.0.0', port=port, debug=debug)
