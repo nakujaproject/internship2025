@@ -1,3 +1,6 @@
-recovery_team/N4-code/N4-Basestation/node_modules/**
-recovery_team/N4-code/N4-Basestation/venv_mac/**
+recovery_team/N4-code/N4-Basestation/node_modules/
+recovery_team/N4-code/N4-Basestation/venv/
+recovery_team/N4-code/N4-Basestation/venv_mac/
+recovery_team/N4-code/N4-Basestation/dist/
+recovery_team/N4-code/N4-Basestation/.env
 

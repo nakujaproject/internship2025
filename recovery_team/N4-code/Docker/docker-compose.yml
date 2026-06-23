@@ -1,0 +1,52 @@
+services:
+
+  # ── MQTT Broker ─────────────────────────────────────────────────────────────
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: n4-mosquitto
+    volumes:
+      - ../N4-Basestation/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    ports:
+      - "${MQTT_TCP_PORT:-1883}:1883"   # MQTT over TCP (flight computer)
+      - "${MQTT_WS_PORT:-1783}:1783"    # MQTT over WebSocket (browser dashboard)
+    restart: unless-stopped
+
+  # ── Python Flask Backend ─────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.backend
+    container_name: n4-backend
+    ports:
+      - "${BACKEND_PORT:-5001}:5001"
+    environment:
+      - FLASK_PORT=5001
+      - FLASK_DEBUG=false
+      # Set SERIAL_PORT to the actual device path when hardware is connected.
+      # Leave empty to run without a serial connection (dashboard still works via MQTT).
+      - SERIAL_PORT=${SERIAL_PORT:-}
+    # To pass a serial device into the container, uncomment and set SERIAL_PORT:
+    # devices:
+    #   - ${SERIAL_PORT}:${SERIAL_PORT}
+    restart: unless-stopped
+
+  # ── React Frontend (Nginx) ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile.frontend
+      args:
+        # VITE_* vars are baked into the static build at image-build time.
+        # The browser connects directly to these addresses, so use the host
+        # machine address (localhost for local runs, or server IP for remote).
+        - VITE_MQTT_HOST=${VITE_MQTT_HOST:-localhost}
+        - VITE_WS_PORT=${VITE_WS_PORT:-1783}
+        - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:5001}
+        - VITE_VIDEO_URL=${VITE_VIDEO_URL:-}
+    container_name: n4-frontend
+    ports:
+      - "${FRONTEND_PORT:-80}:80"
+    depends_on:
+      - mosquitto
+      - backend
+    restart: unless-stopped
