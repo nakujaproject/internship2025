@@ -35,7 +35,7 @@ VITE_BACKEND_URL=http://localhost:5001
 VITE_VIDEO_URL=
 
 # ── Host port mappings ──────────────────────────────────────────────────────
-FRONTEND_PORT=80
+FRONTEND_PORT=8080
 BACKEND_PORT=5001
 MQTT_TCP_PORT=1883
 MQTT_WS_PORT=1783
@@ -48,6 +48,33 @@ EOF
   echo "  .env created. Edit it before rebuilding if deploying to a remote server."
   echo ""
 fi
+
+# ── Load .env ────────────────────────────────────────────────────────────────
+# shellcheck disable=SC1091
+source .env 2>/dev/null || true
+MQTT_TCP_PORT=${MQTT_TCP_PORT:-1883}
+MQTT_WS_PORT=${MQTT_WS_PORT:-1783}
+
+# ── Stop existing containers first ────────────────────────────────────────────
+docker compose down --remove-orphans 2>/dev/null || true
+
+# ── Port conflict check ───────────────────────────────────────────────────────
+for PORT in "$MQTT_TCP_PORT" "$MQTT_WS_PORT"; do
+  PIDS=$(lsof -ti :"$PORT" 2>/dev/null || true)
+  if [ -n "$PIDS" ]; then
+    for PID in $PIDS; do
+      PROC=$(ps -p "$PID" -o comm= 2>/dev/null || true)
+      if [[ "$PROC" == *mosquitto* ]]; then
+        echo "Stopping native mosquitto process (PID $PID) that is using port $PORT ..."
+        kill "$PID" 2>/dev/null || true
+      else
+        echo -e "${RED}Error: port $PORT is already in use by '$PROC' (PID $PID).${NC}"
+        echo "  Free the port before running this script."
+        exit 1
+      fi
+    done
+  fi
+done
 
 # ── Build and start ───────────────────────────────────────────────────────────
 echo "Building and starting containers ..."

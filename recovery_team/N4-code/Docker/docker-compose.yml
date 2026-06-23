@@ -1,9 +1,11 @@
+name: n4-dashboard
+
 services:
 
   # ── MQTT Broker ─────────────────────────────────────────────────────────────
   mosquitto:
     image: eclipse-mosquitto:2
-    container_name: n4-mosquitto
+    container_name: n4-dashboard-mosquitto
     volumes:
       - ../N4-Basestation/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     ports:
@@ -16,7 +18,7 @@ services:
     build:
       context: ..
       dockerfile: Docker/Dockerfile.backend
-    container_name: n4-backend
+    container_name: n4-dashboard-backend
     ports:
       - "${BACKEND_PORT:-5001}:5001"
     environment:
@@ -43,7 +45,7 @@ services:
         - VITE_WS_PORT=${VITE_WS_PORT:-1783}
         - VITE_BACKEND_URL=${VITE_BACKEND_URL:-http://localhost:5001}
         - VITE_VIDEO_URL=${VITE_VIDEO_URL:-}
-    container_name: n4-frontend
+    container_name: n4-dashboard-frontend
     ports:
       - "${FRONTEND_PORT:-80}:80"
     depends_on:

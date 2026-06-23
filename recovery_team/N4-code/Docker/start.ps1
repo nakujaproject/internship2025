@@ -34,7 +34,7 @@ VITE_BACKEND_URL=http://localhost:5001
 VITE_VIDEO_URL=
 
 # ── Host port mappings ──────────────────────────────────────────────────────
-FRONTEND_PORT=80
+FRONTEND_PORT=8080
 BACKEND_PORT=5001
 MQTT_TCP_PORT=1883
 MQTT_WS_PORT=1783
@@ -47,6 +47,38 @@ SERIAL_PORT=
     Write-Host ""
 }
 
+# ── Read .env for port values ─────────────────────────────────────────────────
+$envVars = @{}
+Get-Content ".env" | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
+    $parts = $_ -split '=', 2
+    $envVars[$parts[0].Trim()] = $parts[1].Trim()
+}
+$mqttTcpPort  = if ($envVars['MQTT_TCP_PORT']) { [int]$envVars['MQTT_TCP_PORT'] } else { 1883 }
+$mqttWsPort   = if ($envVars['MQTT_WS_PORT'])  { [int]$envVars['MQTT_WS_PORT'] }  else { 1783 }
+$frontendPort = if ($envVars['FRONTEND_PORT']) { $envVars['FRONTEND_PORT'] } else { "8080" }
+$backendPort  = if ($envVars['BACKEND_PORT'])  { $envVars['BACKEND_PORT'] }  else { "5001" }
+
+# ── Stop existing containers ──────────────────────────────────────────────────
+docker compose down --remove-orphans 2>$null
+
+# ── Port conflict check ───────────────────────────────────────────────────────
+foreach ($port in @($mqttTcpPort, $mqttWsPort)) {
+    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($listener) {
+        $proc = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+        if ($proc -and $proc.Name -like '*mosquitto*') {
+            Write-Host "Stopping native mosquitto process (PID $($proc.Id)) on port $port ..."
+            Stop-Process -Id $proc.Id -Force
+        } else {
+            $procName = if ($proc) { $proc.Name } else { "unknown" }
+            $procId   = if ($proc) { $proc.Id }   else { $listener.OwningProcess }
+            Write-Host "[ERROR] Port $port is already in use by '$procName' (PID $procId)." -ForegroundColor Red
+            Write-Host "  Free the port before running this script."
+            exit 1
+        }
+    }
+}
+
 # ── Build and start ───────────────────────────────────────────────────────────
 Write-Host "Building and starting containers ..."
 docker compose up --build -d
@@ -55,23 +87,12 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# Read ports from .env for display
-$envVars = @{}
-Get-Content ".env" | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
-    $parts = $_ -split '=', 2
-    $envVars[$parts[0].Trim()] = $parts[1].Trim()
-}
-$frontendPort = if ($envVars['FRONTEND_PORT']) { $envVars['FRONTEND_PORT'] } else { "80" }
-$backendPort  = if ($envVars['BACKEND_PORT'])  { $envVars['BACKEND_PORT'] }  else { "5001" }
-$mqttTcp      = if ($envVars['MQTT_TCP_PORT']) { $envVars['MQTT_TCP_PORT'] } else { "1883" }
-$mqttWs       = if ($envVars['MQTT_WS_PORT'])  { $envVars['MQTT_WS_PORT'] }  else { "1783" }
-
 Write-Host ""
 Write-Host "All services started:" -ForegroundColor Green
 Write-Host "  Dashboard : http://localhost:$frontendPort"
 Write-Host "  Backend   : http://localhost:$backendPort/debug"
-Write-Host "  MQTT TCP  : localhost:$mqttTcp"
-Write-Host "  MQTT WS   : localhost:$mqttWs"
+Write-Host "  MQTT TCP  : localhost:$mqttTcpPort"
+Write-Host "  MQTT WS   : localhost:$mqttWsPort"
 Write-Host ""
 Write-Host "Useful commands:"
 Write-Host "  docker compose logs -f          # stream logs"
