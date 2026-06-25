@@ -137,7 +137,7 @@ ESPNowBeaconTransmitter transmitter(ROCKET_MAC, BASE_MAC);
 
 unsigned long mainPyroArmTime = 0;
 unsigned long droguePyroArmTime = 0;
-const unsigned long PYRO_ARM_DURATION = 10 * 60 * 1000; // 5 minutes
+const unsigned long PYRO_ARM_DURATION = 5 * 60 * 1000; // 5 minutes
 bool mainPyroArmed = false;
 bool droguePyroArmed = false;
 
@@ -257,6 +257,7 @@ void arm_pyros() {
 void drogueChuteDeploy() {
     // Start PWM at voltage-derived duty
     int duty = computeDuty(Vcc, desiredDrogueV);
+    drogueActive = false;	//added for defensive programming
     droguePWM.write(duty);
     drogueStartTime = millis();
     drogueActive = true;
@@ -269,6 +270,7 @@ void drogueChuteDeploy() {
 void mainChuteDeploy() {
     // Start PWM at voltage-derived duty
     int duty = computeDuty(Vcc, desiredMainV);
+    mainActive = false;	//added for defensive programming
     mainPWM.write(duty);
     mainStartTime = millis();
     mainActive = true;
@@ -276,8 +278,6 @@ void mainChuteDeploy() {
     debugln(String("📦 MAIN CHUTE DEPLOYED (V=") + String(desiredMainV) + 
             String("V, PWM=") + String(duty) + String("/255, Duration=") + 
             String(mainPWMDuration) + String("ms)"));
-    //delay(MAIN_DESCENT_PYRO_CHARGE_TIME); // Block for charge duration
-    // Optionally: analogWrite(MAIN_CHUTE_EJECT_PIN, 0); // Turn off after charge
 }
 
 void chutesInit() {
@@ -305,7 +305,6 @@ void disarm_pyros() {
 
 
 void armMainPyro() {
-    //analogWrite(MAIN_CHUTE_EJECT_PIN, 255);
     mainPyroArmTime = millis();
     int duty = computeDuty(Vcc, desiredMainV);
     mainPWM.write(duty);
@@ -319,7 +318,6 @@ void armMainPyro() {
 }
 
 void disarmMainPyro() {
-    //analogWrite(MAIN_CHUTE_EJECT_PIN, 0);
     mainPWM.write(0);
     mainActive = false;
     mainPyroArmed = false;
@@ -328,7 +326,6 @@ void disarmMainPyro() {
 }
 
 void armDroguePyro() {
-    //analogWrite(DROGUE_PIN, 255);
     int duty = computeDuty(Vcc, desiredDrogueV);
     droguePWM.write(duty);
     drogueStartTime = millis();
@@ -342,7 +339,6 @@ void armDroguePyro() {
 }
 
 void disarmDroguePyro() {
-    //analogWrite(DROGUE_PIN, 0);
     droguePWM.write(0);
     drogueActive = false;
     droguePyroArmed = false;
@@ -843,12 +839,10 @@ void espnowCommandTask(void* pvParameters) {
                                        system_log_file, ("Unknown ESP-NOW cmd: " + String(cmdBuffer) + "\r\n").c_str());
             }
         }
+    	checkAutoDisarm();
         vTaskDelay(pdMS_TO_TICKS(100));
     }
-    checkAutoDisarm();
 }
-
-
 
 
 
@@ -2113,6 +2107,8 @@ extern "C" void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskNa
 
 //     }
 // }
+
+// state machine
 void checkFlightState(void* pvParameters) {
     telemetry_type_t flight_data;
     static uint8_t last_state = 0xFF;
