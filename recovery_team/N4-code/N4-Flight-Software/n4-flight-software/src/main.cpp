@@ -446,6 +446,66 @@ static inline void requestBuzzerPattern(uint8_t pattern) {
     g_buzzer_pattern_request = pattern;
 }
 
+#if USE_SIMULATION
+
+bool load_state = false;
+struct sim_record {
+	float time_s;
+	float altitude_m;
+	float velocity_mps;
+	float acceleration_mps2;
+};
+
+#define MAX_SIM_RECORDS 1243
+
+sim_record sim_data[MAX_SIM_RECORDS];
+
+uint16_t sim_count = 0;
+uint16_t sim_index = 0;
+
+bool load_sim_file(const char *filename)
+{
+	File file = SPIFFS.open(filename);
+	if (!file) {
+		debugln("Failed to open simulation file!");
+		return false;
+	}
+
+	sim_count = 0;
+
+	while (file.available()) {
+		String line = file.readStringUntil('\n');
+		line.trim();
+
+		if (line.length() == 0) continue; //skip blank lines
+		if (line[0] == '#') continue; //skip comments
+		if (!isdigit(line[0])) continue; //skip title
+
+		float t, alt, vel, accel;
+
+		if (sscanf(line.c_str(), 
+					"%f,%f,%f,%f",
+					&t, 
+					&alt,
+					&vel,
+					&accel) == 4) {
+			if (sim_count < MAX_SIM_RECORDS) {
+				sim_data[sim_count].time_s = t;
+				sim_data[sim_count].altitude_m = alt;
+				sim_data[sim_count].velocity_mps = vel;
+				sim_data[sim_count].acceleration_mps2 = accel;
+			
+				sim_count++;
+			}
+		}
+	}
+
+	file.close();
+	return true;
+}
+#endif
+
+
 static void buildTelemetryCsv(const telemetry_type_t& telemetry_received_packet, char* buffer, size_t buffer_len) {
     snprintf(buffer, buffer_len,
              "%d,%d,%d,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.8f,%.8f,%.2f,%u,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%.2f,%.2f,%d,%d,%.2f,%.2f\n",
@@ -1319,6 +1379,29 @@ QueueHandle_t kalman2d_input_queue_handle;
 
 //////////////////////////////////////////////////////////////////////////////////////////////
 
+#if USE_SIMULATION
+TaskHandle_t simulationTaskHandle = NULL;
+
+void simulation_task(void *pvParameters) 
+{
+	telemetry_type_t telemetry;
+	uint32_t start = millis();
+
+	while (sim_index < sim_count) {
+		float elapsed = (millis() - start) / 1000.0f;
+
+		if (elapsed >= sim_data[sim_index].time_s) {
+			telemetry.alt_data.rel_altitude = sim_data[sim_index].altitude_m;
+			telemetry.alt_data.kalman_vertical_velocity = sim_data[sim_index].velocity_mps;
+			xQueueSend(check_state_queue_handle, &telemetry, 0);
+			sim_index++;
+		}
+		vTaskDelay(pdMS_TO_TICKS(10));
+	}
+	debug("Simulation complete!");
+	vTaskDelete(NULL);
+}
+#endif
 /*!****************************************************************************
  * @brief Read acceleration data from the accelerometer
  * @param pvParameters - A value that is passed as the paramater to the created task.
@@ -3417,7 +3500,25 @@ void xCreateAllTasks() {
     //         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]DMP FIFO task creation failed\r\n");
     //     }
     // }
+	#if USE_SIMULATION
+	if (sim_count > 0) {
+	BaseType_t sim = xTaskCreatePinnedToCore(simulation_task, "simulation", STACK_SIZE * 2, NULL, 2, &simulationTaskHandle, 1);
 
+	if (sim == pdPASS) {
+    	tasks_created++;
+    	debugln("[+]Simulation task created OK.");
+    	SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::INFO, system_log_file, "[+]Simulation task created OK.\r\n");
+	}
+	else {
+    	tasks_failed++;
+    	debugln("[-]Simulation task creation failed");
+    	SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::ERROR, system_log_file, "[-]Simulation task creation failed\r\n");
+	}
+	} else {
+		debugln("[-]No simulation data loaded.");	
+	}
+
+	#else
     /* 🛡️ READ ACCELERATION DATA - with memory protection */
     BaseType_t gr = xTaskCreatePinnedToCore(readAccelerationTask, "readAccelerometer", STACK_SIZE*4, NULL, 2, &readAccelerationTaskHandle, 1);
     if(gr == pdPASS) {
@@ -3441,6 +3542,7 @@ void xCreateAllTasks() {
         debugln("[-]Failed to create GPS task");
         SYSTEM_LOGGER.logToFile(SPIFFS, LOG_MODE::APPEND, "FC1", LOG_LEVEL::WARNING, system_log_file, "[-]Failed to create GPS task\r\n");
     }
+	#endif
 
     /* 🛡️ CHECK FLIGHT STATE TASK - essential for flight safety */
     BaseType_t cf = xTaskCreatePinnedToCore(checkFlightState,"checkFlightState",STACK_SIZE*2,NULL, 2, &checkFlightStateTaskHandle, 1);
@@ -3748,6 +3850,15 @@ void setup() {
 
     /* core to run the tasks */
     uint8_t app_core_id = xPortGetCoreID();
+
+	// 
+	#if USE_SIMULATION
+		if (SPIFFS.exists("/Flight Simulation from Open Rocket.csv")) {
+			if (load_sim_file("/Flight Simulation from Open Rocket.csv")) {
+				debugln("Simulation data ready.");
+			}
+		}
+	#endif
 
     // SPIFFS Must be initialized first to allow event logging from the word go
     uint8_t spiffs_init_state = InitSPIFFS();
