@@ -78,7 +78,7 @@ extern communication_status_t comm_status;
 #endif
 // Simulation toggle: 1 = use internal simulated flight profile & GPS, 0 = use real sensors
 #ifndef USE_SIMULATION
-#define USE_SIMULATION 0
+#define USE_SIMULATION 1
 #endif
 
 #if DEBUGGING
