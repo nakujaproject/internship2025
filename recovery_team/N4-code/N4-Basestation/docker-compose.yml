@@ -1,0 +1,29 @@
+name: n4-basestation
+
+services:
+
+  backend:
+    image: abelnyaosi/n4-v4-backend
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: n4-backend
+    ports:
+      - "${BACKEND_PORT:-3000}:3000"
+      - "${MQTT_TCP_PORT:-1883}:1883"
+      - "${MQTT_WS_PORT:-1783}:1783"
+    environment:
+      - SERIAL_PORT=
+    restart: unless-stopped
+
+  frontend:
+    image: abelnyaosi/n4-v4-frontend
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: n4-frontend
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped

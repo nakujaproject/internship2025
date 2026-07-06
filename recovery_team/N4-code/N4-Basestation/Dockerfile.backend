@@ -1,0 +1,28 @@
+FROM node:20-alpine AS build
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm install
+COPY . .
+
+FROM node:20-alpine
+
+RUN apk add --no-cache python3 py3-pip mosquitto
+
+WORKDIR /app
+
+COPY --from=build /app/package*.json ./
+RUN npm install --omit=dev
+
+COPY --from=build /app/server.js ./
+COPY --from=build /app/src/routes ./src/routes
+COPY --from=build /app/mosquitto.conf ./
+COPY --from=build /app/start_basestation.py ./
+COPY --from=build /app/research/scripts/server.py ./research/scripts/
+COPY --from=build /app/osm-2020-02-10-v3.11_africa_kenya.mbtiles ./
+
+RUN pip3 install --break-system-packages --no-cache-dir pyserial paho-mqtt
+
+EXPOSE 3000 1883 1783
+
+CMD ["python3", "start_basestation.py"]

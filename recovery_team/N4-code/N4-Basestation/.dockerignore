@@ -1,0 +1,13 @@
+node_modules
+dist
+telemetry_logs
+docs
+diagrams
+.git
+npm-debug.log
+.vs
+*.md
+*.pyc
+__pycache__
+.env.local
+maps
