@@ -12,7 +12,7 @@
 /*!< note: u can use wifi and xbee at the same time, so both of these handles can be set */
 /*!< at the same time */
 #define MQTT 0                                 /*!< Default to MQTT mode - can be overridden dynamically */
-#define TEST 1                                /*!< set to 1 to enable test mode - allows data transmission even when disarmed */
+#define TEST 1                               /*!< set to 1 to enable test mode - allows data transmission even when disarmed */
 #define XBEE 1                              /*!< set to 1 if using XBEE for telemetry transfer - can be overridden dynamically */
 
 // 🔥 DYNAMIC COMMUNICATION MODE CONTROL (MQTT / BEACON / XBEE)
@@ -71,7 +71,7 @@ extern communication_status_t comm_status;
 #define DEBUG_TO_TERMINAL 1                 /*!< allow create task that print data to terminal. Set to 0 before flight  */
 // Compile-time enables for storage backends. Set to 0 to disable at compile time.
 #ifndef ENABLE_FLASH_LOGGING
-#define ENABLE_FLASH_LOGGING 1  /* 1 = enable external flash logging */
+#define ENABLE_FLASH_LOGGING 0  /* 1 = enable external flash logging */
 #endif
 #ifndef ENABLE_SD_LOGGING
 #define ENABLE_SD_LOGGING 1     /* 1 = enable SD card logging */

@@ -2010,9 +2010,24 @@ void taskKalman2D(void *pvParameters) {
             telemetry_out.record_number = ++kalman_record_counter;
 
             // Send the telemetry exactly once per Kalman update to consumers
-            if (debug_to_term_queue_handle != NULL) xQueueSend(debug_to_term_queue_handle, &telemetry_out, pdMS_TO_TICKS(10)); // FIX
-            if (log_to_mem_queue_handle != NULL) xQueueSend(log_to_mem_queue_handle, &telemetry_out, 0); // FIX: non-blocking enqueue to unified log queue
-            if (telemetry_data_queue_handle != NULL) xQueueSend(telemetry_data_queue_handle, &telemetry_out, pdMS_TO_TICKS(10)); // FIX
+            if (debug_to_term_queue_handle != NULL) {
+                BaseType_t sent = xQueueSend(debug_to_term_queue_handle, &telemetry_out, pdMS_TO_TICKS(10));
+                if (sent != pdTRUE) {
+                    Serial.printf("[QUEUE DEBUG] debug_to_term_queue_handle send failed (record=%u)\n", telemetry_out.record_number);
+                }
+            }
+            if (log_to_mem_queue_handle != NULL) {
+                BaseType_t sent = xQueueSend(log_to_mem_queue_handle, &telemetry_out, 0);
+                if (sent != pdTRUE) {
+                    Serial.printf("[QUEUE DEBUG] log_to_mem_queue_handle full (record=%u)\n", telemetry_out.record_number);
+                }
+            }
+            if (telemetry_data_queue_handle != NULL) {
+                BaseType_t sent = xQueueSend(telemetry_data_queue_handle, &telemetry_out, pdMS_TO_TICKS(10));
+                if (sent != pdTRUE) {
+                    Serial.printf("[QUEUE DEBUG] telemetry_data_queue_handle send failed (record=%u)\n", telemetry_out.record_number);
+                }
+            }
 
         }
 
@@ -2753,6 +2768,8 @@ void preflightHealthTask(void* pvParameters) {
                     debug(", main=");
                     debug(checks.main_line_state);
                     debugln(") -> forced OFF");
+                    Serial.printf("[PREFLT DEBUG] drogueActive=%d mainActive=%d droguePyroArmed=%d mainPyroArmed=%d remote_switch=%d\n",
+                                  drogueActive, mainActive, droguePyroArmed, mainPyroArmed, digitalRead(REMOTE_SWITCH));
                 }
                 if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
                 if (!g_bmp_ready) debugln("  - BMP180 init failed");
@@ -2787,6 +2804,8 @@ void preflightHealthTask(void* pvParameters) {
                         debug(", main=");
                         debug(checks.main_line_state);
                         debugln(") -> forced OFF");
+                        Serial.printf("[PREFLT DEBUG] drogueActive=%d mainActive=%d droguePyroArmed=%d mainPyroArmed=%d remote_switch=%d\n",
+                                      drogueActive, mainActive, droguePyroArmed, mainPyroArmed, digitalRead(REMOTE_SWITCH));
                     }
                     if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
                     if (!g_bmp_ready) debugln("  - BMP180 init failed");
@@ -2829,6 +2848,8 @@ void preflightHealthTask(void* pvParameters) {
                             debug(", main=");
                             debug(checks.main_line_state);
                             debugln(") -> forced OFF");
+                            Serial.printf("[PREFLT DEBUG] drogueActive=%d mainActive=%d droguePyroArmed=%d mainPyroArmed=%d remote_switch=%d\n",
+                                          drogueActive, mainActive, droguePyroArmed, mainPyroArmed, digitalRead(REMOTE_SWITCH));
                         }
                         if (!g_spiffs_ready) debugln("  - SPIFFS init failed");
                         if (!g_bmp_ready) debugln("  - BMP180 init failed");
@@ -3018,6 +3039,11 @@ void debugToTerminalTask(void* pvParameters){
             if (xQueueReceive(debug_to_term_queue_handle, &telemetry_received_packet, pdMS_TO_TICKS(1000)) != pdTRUE) {
                 if (millis() - last_timeout_log_ms > 5000) {
                     Serial.println("[DEBUG] Telemetry timeout - no new packets");
+                    if (debug_to_term_queue_handle != NULL) {
+                        UBaseType_t available = uxQueueSpacesAvailable(debug_to_term_queue_handle);
+                        UBaseType_t waiting = uxQueueMessagesWaiting(debug_to_term_queue_handle);
+                        Serial.printf("[QUEUE DEBUG] debug_to_term_queue_handle waiting=%u available=%u\n", waiting, available);
+                    }
                     last_timeout_log_ms = millis();
                 }
                 vTaskDelay(pdMS_TO_TICKS(10));
@@ -3025,6 +3051,7 @@ void debugToTerminalTask(void* pvParameters){
             }
         } else {
             // If queue not configured, yield briefly
+            Serial.println("[QUEUE DEBUG] debug_to_term_queue_handle is NULL");
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
