@@ -248,7 +248,8 @@ function App() {
 useEffect(() => {
   const fetchTelemetryData = async () => {
     try {
-      const response = await fetch("http://localhost:5000/data");
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5001';
+      const response = await fetch(`${backendUrl}/data`);
       if (!response.ok) {
         throw new Error(`HTTP error! Status: ${response.status}`);
       }

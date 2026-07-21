@@ -1,0 +1,6 @@
+N4-Basestation/node_modules
+N4-Basestation/venv
+N4-Basestation/venv_mac
+N4-Basestation/dist
+N4-Basestation/*.log
+N4-Flight-Software/
