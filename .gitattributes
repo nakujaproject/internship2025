@@ -1,0 +1,2 @@
+weekly_presentations_2025/**/*.pptx filter=lfs diff=lfs merge=lfs -text
+weekly_presentations_2025/**/*.pdf filter=lfs diff=lfs merge=lfs -text
